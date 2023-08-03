@@ -23,6 +23,7 @@ import org.thingsboard.server.actors.TbActorRef;
 import org.thingsboard.server.actors.TbEntityActorId;
 import org.thingsboard.server.actors.service.DefaultActorService;
 import org.thingsboard.server.actors.shared.ComponentMsgProcessor;
+import org.thingsboard.server.cluster.TbClusterService;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.RuleChainId;
@@ -49,7 +50,6 @@ import org.thingsboard.server.gen.transport.TransportProtos.ToRuleEngineMsg;
 import org.thingsboard.server.queue.TbQueueCallback;
 import org.thingsboard.server.queue.common.MultipleTbQueueTbMsgCallbackWrapper;
 import org.thingsboard.server.queue.common.TbQueueTbMsgCallbackWrapper;
-import org.thingsboard.server.cluster.TbClusterService;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -94,7 +94,7 @@ public class RuleChainActorMessageProcessor extends ComponentMsgProcessor<RuleCh
 
     @Override
     public String getComponentName() {
-        return null;
+        return ruleChainName;
     }
 
     @Override
@@ -232,7 +232,7 @@ public class RuleChainActorMessageProcessor extends ComponentMsgProcessor<RuleCh
         } catch (RuleNodeException rne) {
             msg.getCallback().onFailure(rne);
         } catch (Exception e) {
-            msg.getCallback().onFailure(new RuleEngineException(e.getMessage()));
+            msg.getCallback().onFailure(new RuleEngineException(e.getMessage(), e));
         }
     }
 
@@ -335,7 +335,7 @@ public class RuleChainActorMessageProcessor extends ComponentMsgProcessor<RuleCh
             msg.getCallback().onFailure(rne);
         } catch (Exception e) {
             log.warn("[" + tenantId + "]" + "[" + entityId + "]" + "[" + msg.getId() + "]" + " onTellNext failure", e);
-            msg.getCallback().onFailure(new RuleEngineException("onTellNext - " + e.getMessage()));
+            msg.getCallback().onFailure(new RuleEngineException("onTellNext - " + e.getMessage(), e));
         }
     }
 
