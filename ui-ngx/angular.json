@@ -63,6 +63,11 @@
                 "glob": "marker-shadow.png",
                 "input": "node_modules/leaflet/dist/images/",
                 "output": "/"
+              },
+              {
+                "glob": "service-worker.js",
+                "input": "./src/assets/js/",
+                "output": "/"
               }
             ],
             "styles": [

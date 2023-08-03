@@ -23,6 +23,10 @@
   <base href="/">
 
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="manifest" href="/assets/js/pwa.webmanifest">
+  <meta http-equiv="Service-Worker-Allowed" content="/"/>
+  <link rel="apple-touch-icon" href="/assets/icons/transparent/icon-192x192.png">
+  <meta name="theme-color" content="#305680"/>
   <link rel="icon" type="image/x-icon" href="thingsboard.ico">
   <link rel="preload" href="assets/fonts/MaterialIcons-Regular.ttf" as="font" type="font/ttf" crossorigin="anonymous" />
   <link rel="stylesheet" href="assets/fonts/material-icons.css" />
@@ -103,5 +107,8 @@
     <div class="tb-bounce2"></div>
     <div class="tb-bounce3"></div>
   </div>
+  <span>You are now</span> <span><b class="page-status">online</b></span>
+  <script src="/assets/js/pwa.js"></script>
+  <script src="/assets/js/status.js"></script>
 </body>
 </html>
