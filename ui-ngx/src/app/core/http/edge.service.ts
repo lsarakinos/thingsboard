@@ -23,7 +23,7 @@ import { PageData } from '@shared/models/page/page-data';
 import { EntitySubtype } from '@app/shared/models/entity-type.models';
 import { Edge, EdgeEvent, EdgeInfo, EdgeInstallInstructions, EdgeSearchQuery } from '@shared/models/edge.models';
 import { EntityId } from '@shared/models/id/entity-id';
-import { BulkImportRequest, BulkImportResult } from '@home/components/import-export/import-export.models';
+import { BulkImportRequest, BulkImportResult } from '@shared/import-export/import-export.models';
 
 @Injectable({
   providedIn: 'root'
@@ -114,7 +114,7 @@ export class EdgeService {
     return this.http.post<BulkImportResult>('/api/edge/bulk_import', entitiesData, defaultHttpOptionsFromConfig(config));
   }
 
-  public getEdgeDockerInstallInstructions(edgeId: string, config?: RequestConfig): Observable<EdgeInstallInstructions> {
-    return this.http.get<EdgeInstallInstructions>(`/api/edge/instructions/${edgeId}`, defaultHttpOptionsFromConfig(config));
+  public getEdgeInstallInstructions(edgeId: string, method: string = 'ubuntu', config?: RequestConfig): Observable<EdgeInstallInstructions> {
+    return this.http.get<EdgeInstallInstructions>(`/api/edge/instructions/${edgeId}/${method}`, defaultHttpOptionsFromConfig(config));
   }
 }

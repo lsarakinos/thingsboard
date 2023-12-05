@@ -206,7 +206,7 @@ public abstract class AbstractLwM2MIntegrationTest extends AbstractTransportInte
             lwModel.setFileName(resourceName);
             lwModel.setTenantId(tenantId);
             byte[] bytes = IOUtils.toByteArray(AbstractLwM2MIntegrationTest.class.getClassLoader().getResourceAsStream("lwm2m/" + resourceName));
-            lwModel.setData(Base64.getEncoder().encodeToString(bytes));
+            lwModel.setData(bytes);
             lwModel = doPostWithTypedResponse("/api/resource", lwModel, new TypeReference<>() {
             });
             Assert.assertNotNull(lwModel);
@@ -232,7 +232,7 @@ public abstract class AbstractLwM2MIntegrationTest extends AbstractTransportInte
         TelemetryPluginCmdsWrapper wrapper = new TelemetryPluginCmdsWrapper();
         wrapper.setEntityDataCmds(Collections.singletonList(cmd));
 
-        getWsClient().send(mapper.writeValueAsString(wrapper));
+        getWsClient().send(JacksonUtil.toString(wrapper));
         getWsClient().waitForReply();
 
         getWsClient().registerWaitForUpdate();
@@ -240,7 +240,7 @@ public abstract class AbstractLwM2MIntegrationTest extends AbstractTransportInte
         awaitObserveReadAll(0, false, device.getId().getId().toString());
         String msg = getWsClient().waitForUpdate();
 
-        EntityDataUpdate update = mapper.readValue(msg, EntityDataUpdate.class);
+        EntityDataUpdate update = JacksonUtil.fromString(msg, EntityDataUpdate.class);
         Assert.assertEquals(1, update.getCmdId());
         List<EntityData> eData = update.getUpdate();
         Assert.assertNotNull(eData);

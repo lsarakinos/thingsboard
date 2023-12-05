@@ -27,9 +27,15 @@ public interface DeviceProfileService extends EntityDaoService {
 
     DeviceProfile findDeviceProfileById(TenantId tenantId, DeviceProfileId deviceProfileId);
 
+    DeviceProfile findDeviceProfileById(TenantId tenantId, DeviceProfileId deviceProfileId, boolean putInCache);
+
     DeviceProfile findDeviceProfileByName(TenantId tenantId, String profileName);
 
+    DeviceProfile findDeviceProfileByName(TenantId tenantId, String profileName, boolean putInCache);
+
     DeviceProfileInfo findDeviceProfileInfoById(TenantId tenantId, DeviceProfileId deviceProfileId);
+
+    DeviceProfile saveDeviceProfile(DeviceProfile deviceProfile, boolean doValidate);
 
     DeviceProfile saveDeviceProfile(DeviceProfile deviceProfile);
 

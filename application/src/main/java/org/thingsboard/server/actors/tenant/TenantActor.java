@@ -32,7 +32,6 @@ import org.thingsboard.server.actors.service.DefaultActorService;
 import org.thingsboard.server.common.data.ApiUsageState;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.Tenant;
-import org.thingsboard.server.common.data.TenantProfile;
 import org.thingsboard.server.common.data.edge.Edge;
 import org.thingsboard.server.common.data.id.DeviceId;
 import org.thingsboard.server.common.data.id.EdgeId;
@@ -49,16 +48,18 @@ import org.thingsboard.server.common.msg.TbMsg;
 import org.thingsboard.server.common.msg.aware.DeviceAwareMsg;
 import org.thingsboard.server.common.msg.aware.RuleChainAwareMsg;
 import org.thingsboard.server.common.msg.edge.EdgeSessionMsg;
-import org.thingsboard.server.common.msg.notification.trigger.RuleEngineMsgTrigger;
 import org.thingsboard.server.common.msg.plugin.ComponentLifecycleMsg;
 import org.thingsboard.server.common.msg.queue.PartitionChangeMsg;
 import org.thingsboard.server.common.msg.queue.QueueToRuleEngineMsg;
 import org.thingsboard.server.common.msg.queue.RuleEngineException;
 import org.thingsboard.server.common.msg.queue.ServiceType;
+import org.thingsboard.server.common.msg.rule.engine.DeviceDeleteMsg;
 import org.thingsboard.server.service.edge.rpc.EdgeRpcService;
 import org.thingsboard.server.service.transport.msg.TransportToDeviceActorMsgWrapper;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Slf4j
 public class TenantActor extends RuleChainManagerActor {
@@ -67,8 +68,11 @@ public class TenantActor extends RuleChainManagerActor {
     private boolean isCore;
     private ApiUsageState apiUsageState;
 
+    private Set<DeviceId> deletedDevices;
+
     private TenantActor(ActorSystemContext systemContext, TenantId tenantId) {
         super(systemContext, tenantId);
+        this.deletedDevices = new HashSet<>();
     }
 
     boolean cantFindTenant = false;
@@ -83,21 +87,21 @@ public class TenantActor extends RuleChainManagerActor {
                 cantFindTenant = true;
                 log.info("[{}] Started tenant actor for missing tenant.", tenantId);
             } else {
-                TenantProfile tenantProfile = systemContext.getTenantProfileCache().get(tenant.getTenantProfileId());
-
                 isCore = systemContext.getServiceInfoProvider().isService(ServiceType.TB_CORE);
                 isRuleEngine = systemContext.getServiceInfoProvider().isService(ServiceType.TB_RULE_ENGINE);
                 if (isRuleEngine) {
-                    try {
-                        if (getApiUsageState().isReExecEnabled()) {
-                            log.debug("[{}] Going to init rule chains", tenantId);
-                            initRuleChains();
-                        } else {
-                            log.info("[{}] Skip init of the rule chains due to API limits", tenantId);
+                    if (systemContext.getPartitionService().isManagedByCurrentService(tenantId)) {
+                        try {
+                            if (getApiUsageState().isReExecEnabled()) {
+                                log.debug("[{}] Going to init rule chains", tenantId);
+                                initRuleChains();
+                            } else {
+                                log.info("[{}] Skip init of the rule chains due to API limits", tenantId);
+                            }
+                        } catch (Exception e) {
+                            log.info("Failed to check ApiUsage \"ReExecEnabled\"!!!", e);
+                            cantFindTenant = true;
                         }
-                    } catch (Exception e) {
-                        log.info("Failed to check ApiUsage \"ReExecEnabled\"!!!", e);
-                        cantFindTenant = true;
                     }
                 }
                 log.debug("[{}] Tenant actor started.", tenantId);
@@ -211,10 +215,6 @@ public class TenantActor extends RuleChainManagerActor {
             log.trace("[{}] Ack message because Rule Engine is disabled", tenantId);
             tbMsg.getCallback().onSuccess();
         }
-        systemContext.getNotificationRuleProcessor().process(RuleEngineMsgTrigger.builder()
-                .tenantId(tenantId)
-                .msg(tbMsg)
-                .build());
     }
 
     private void onRuleChainMsg(RuleChainAwareMsg msg) {
@@ -226,6 +226,10 @@ public class TenantActor extends RuleChainManagerActor {
     private void onToDeviceActorMsg(DeviceAwareMsg msg, boolean priority) {
         if (!isCore) {
             log.warn("RECEIVED INVALID MESSAGE: {}", msg);
+        }
+        if (deletedDevices.contains(msg.getDeviceId())) {
+            log.debug("RECEIVED MESSAGE FOR DELETED DEVICE: {}", msg);
+            return;
         }
         TbActorRef deviceActor = getOrCreateDeviceActor(msg.getDeviceId());
         if (priority) {
@@ -246,7 +250,8 @@ public class TenantActor extends RuleChainManagerActor {
                 log.info("[{}] Received API state update. Going to ENABLE Rule Engine execution.", tenantId);
                 initRuleChains();
             }
-        } else if (msg.getEntityId().getEntityType() == EntityType.EDGE) {
+        }
+        if (msg.getEntityId().getEntityType() == EntityType.EDGE) {
             EdgeId edgeId = new EdgeId(msg.getEntityId().getId());
             EdgeRpcService edgeRpcService = systemContext.getEdgeRpcService();
             if (msg.getEvent() == ComponentLifecycleEvent.DELETED) {
@@ -255,7 +260,13 @@ public class TenantActor extends RuleChainManagerActor {
                 Edge edge = systemContext.getEdgeService().findEdgeById(tenantId, edgeId);
                 edgeRpcService.updateEdge(tenantId, edge);
             }
-        } else if (isRuleEngine) {
+        }
+        if (msg.getEntityId().getEntityType() == EntityType.DEVICE && ComponentLifecycleEvent.DELETED == msg.getEvent()) {
+            DeviceId deviceId = (DeviceId) msg.getEntityId();
+            onToDeviceActorMsg(new DeviceDeleteMsg(tenantId, deviceId), true);
+            deletedDevices.add(deviceId);
+        }
+        if (isRuleEngine) {
             TbActorRef target = getEntityActorRef(msg.getEntityId());
             if (target != null) {
                 if (msg.getEntityId().getEntityType() == EntityType.RULE_CHAIN) {
@@ -275,7 +286,8 @@ public class TenantActor extends RuleChainManagerActor {
     private TbActorRef getOrCreateDeviceActor(DeviceId deviceId) {
         return ctx.getOrCreateChildActor(new TbEntityActorId(deviceId),
                 () -> DefaultActorService.DEVICE_DISPATCHER_NAME,
-                () -> new DeviceActorCreator(systemContext, tenantId, deviceId));
+                () -> new DeviceActorCreator(systemContext, tenantId, deviceId),
+                () -> true);
     }
 
     private void onToEdgeSessionMsg(EdgeSessionMsg msg) {

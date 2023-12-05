@@ -15,7 +15,6 @@
  */
 package org.thingsboard.server.actors;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -29,6 +28,8 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.thingsboard.common.util.JacksonUtil;
+import org.thingsboard.server.service.executors.PubSubRuleNodeExecutorProvider;
 import org.thingsboard.rule.engine.api.MailService;
 import org.thingsboard.rule.engine.api.NotificationCenter;
 import org.thingsboard.rule.engine.api.SmsService;
@@ -48,6 +49,7 @@ import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.plugin.ComponentLifecycleEvent;
 import org.thingsboard.server.common.msg.TbActorMsg;
 import org.thingsboard.server.common.msg.TbMsg;
+import org.thingsboard.server.common.msg.notification.NotificationRuleProcessor;
 import org.thingsboard.server.common.msg.queue.ServiceType;
 import org.thingsboard.server.common.msg.queue.TopicPartitionInfo;
 import org.thingsboard.server.common.msg.tools.TbRateLimits;
@@ -90,7 +92,6 @@ import org.thingsboard.server.dao.widget.WidgetsBundleService;
 import org.thingsboard.server.queue.discovery.DiscoveryService;
 import org.thingsboard.server.queue.discovery.PartitionService;
 import org.thingsboard.server.queue.discovery.TbServiceInfoProvider;
-import org.thingsboard.server.queue.notification.NotificationRuleProcessor;
 import org.thingsboard.server.queue.util.DataDecodingEncodingService;
 import org.thingsboard.server.service.apiusage.TbApiUsageStateService;
 import org.thingsboard.server.service.component.ComponentDiscoveryService;
@@ -115,7 +116,6 @@ import org.thingsboard.server.service.transport.TbCoreToTransportService;
 
 import javax.annotation.Nullable;
 import javax.annotation.PostConstruct;
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.concurrent.ConcurrentHashMap;
@@ -149,8 +149,6 @@ public class ActorSystemContext {
             log.error("Could not save debug Event for Node", th);
         }
     };
-
-    protected final ObjectMapper mapper = new ObjectMapper();
 
     private final ConcurrentMap<TenantId, DebugTbRateLimits> debugPerTenantLimits = new ConcurrentHashMap<>();
 
@@ -249,6 +247,7 @@ public class ActorSystemContext {
     private RuleNodeStateService ruleNodeStateService;
 
     @Autowired
+    @Getter
     private PartitionService partitionService;
 
     @Autowired
@@ -323,6 +322,11 @@ public class ActorSystemContext {
     @Autowired
     @Getter
     private NotificationExecutorService notificationExecutor;
+
+    @Lazy
+    @Autowired
+    @Getter
+    private PubSubRuleNodeExecutorProvider pubSubRuleNodeExecutorProvider;
 
     @Autowired
     @Getter
@@ -530,9 +534,13 @@ public class ActorSystemContext {
     @Getter
     private String debugPerTenantLimitsConfiguration;
 
-    @Value("${actors.rpc.sequential:false}")
+    @Value("${actors.rpc.submit_strategy:BURST}")
     @Getter
-    private boolean rpcSequential;
+    private String rpcSubmitStrategy;
+
+    @Value("${actors.rpc.response_timeout_ms:30000}")
+    @Getter
+    private long rpcResponseTimeout;
 
     @Value("${actors.rpc.max_retries:5}")
     @Getter
@@ -650,7 +658,7 @@ public class ActorSystemContext {
                         .dataType(tbMsg.getDataType().name())
                         .relationType(relationType)
                         .data(tbMsg.getData())
-                        .metadata(mapper.writeValueAsString(tbMsg.getMetaData().getData()));
+                        .metadata(JacksonUtil.toString(tbMsg.getMetaData().getData()));
 
                 if (error != null) {
                     event.error(toString(error));
@@ -660,7 +668,7 @@ public class ActorSystemContext {
 
                 ListenableFuture<Void> future = eventService.saveAsync(event.build());
                 Futures.addCallback(future, RULE_NODE_DEBUG_EVENT_ERROR_CALLBACK, MoreExecutors.directExecutor());
-            } catch (IOException ex) {
+            } catch (IllegalArgumentException ex) {
                 log.warn("Failed to persist rule node debug message", ex);
             }
         }

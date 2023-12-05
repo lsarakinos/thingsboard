@@ -46,6 +46,7 @@ import org.thingsboard.server.dao.tenant.TenantService;
 import org.thingsboard.server.dao.usagerecord.ApiUsageStateService;
 import org.thingsboard.server.queue.settings.TbRuleEngineQueueConfiguration;
 import org.thingsboard.server.service.install.sql.SqlDbHelper;
+import org.thingsboard.server.service.install.update.DefaultDataUpdateService;
 
 import java.nio.charset.Charset;
 import java.nio.file.Files;
@@ -62,6 +63,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import static org.thingsboard.server.service.install.DatabaseHelper.ADDITIONAL_INFO;
 import static org.thingsboard.server.service.install.DatabaseHelper.ASSIGNED_CUSTOMERS;
@@ -637,7 +639,8 @@ public class SqlDatabaseUpgradeService implements DatabaseEntitiesUpgradeService
                                 futures.add(dbUpgradeExecutor.submit(() -> {
                                     try {
                                         assetProfileService.createDefaultAssetProfile(tenantId);
-                                    } catch (Exception e) {}
+                                    } catch (Exception e) {
+                                    }
                                 }));
                             }
                             Futures.allAsList(futures).get();
@@ -656,7 +659,8 @@ public class SqlDatabaseUpgradeService implements DatabaseEntitiesUpgradeService
                                     futures.add(dbUpgradeExecutor.submit(() -> {
                                         try {
                                             assetProfileService.findOrCreateAssetProfile(tenantId, assetType);
-                                        } catch (Exception e) {}
+                                        } catch (Exception e) {
+                                        }
                                     }));
                                 }
                             }
@@ -714,20 +718,70 @@ public class SqlDatabaseUpgradeService implements DatabaseEntitiesUpgradeService
                 }
                 break;
             case "3.5.0":
-                try (Connection conn = DriverManager.getConnection(dbUrl, dbUserName, dbPassword)) {
-                    log.info("Updating schema ...");
-                    if (isOldSchema(conn, 3005000)) {
-                        schemaUpdateFile = Paths.get(installScripts.getDataDir(), "upgrade", "3.5.0", SCHEMA_UPDATE_SQL);
-                        loadSql(schemaUpdateFile, conn);
-                        conn.createStatement().execute("UPDATE tb_schema_settings SET schema_version = 3005001;");
+                updateSchema("3.5.0", 3005000, "3.5.1", 3005001, null);
+                break;
+            case "3.5.1":
+                updateSchema("3.5.1", 3005001, "3.6.0", 3006000, conn -> {
+                    String[] entityNames = new String[]{"device", "component_descriptor", "customer", "dashboard", "rule_chain", "rule_node", "ota_package",
+                            "asset_profile", "asset", "device_profile", "tb_user", "tenant_profile", "tenant", "widgets_bundle", "entity_view", "edge"};
+                    for (String entityName : entityNames) {
+                        try {
+                            conn.createStatement().execute("ALTER TABLE " + entityName + " DROP COLUMN " + SEARCH_TEXT + " CASCADE");
+                        } catch (Exception e) {
+                        }
                     }
-                    log.info("Schema updated.");
-                } catch (Exception e) {
-                    log.error("Failed updating schema!!!", e);
-                }
+                    try {
+                        conn.createStatement().execute("ALTER TABLE component_descriptor ADD COLUMN IF NOT EXISTS configuration_version int DEFAULT 0;");
+                    } catch (Exception e) {
+                    }
+                    try {
+                        conn.createStatement().execute("ALTER TABLE rule_node ADD COLUMN IF NOT EXISTS configuration_version int DEFAULT 0;");
+                    } catch (Exception e) {
+                    }
+                    try {
+                        conn.createStatement().execute("CREATE INDEX IF NOT EXISTS idx_rule_node_type_configuration_version ON rule_node(type, configuration_version);");
+                    } catch (Exception e) {
+                    }
+                    try {
+                        conn.createStatement().execute("UPDATE rule_node SET " +
+                                "configuration = (configuration::jsonb || '{\"updateAttributesOnlyOnValueChange\": \"false\"}'::jsonb)::varchar, " +
+                                "configuration_version = 1 " +
+                                "WHERE type = 'org.thingsboard.rule.engine.telemetry.TbMsgAttributesNode' AND configuration_version < 1;");
+                    } catch (Exception e) {
+                    }
+                    try {
+                        conn.createStatement().execute("CREATE INDEX IF NOT EXISTS idx_notification_recipient_id_unread ON notification(recipient_id) WHERE status <> 'READ';");
+                    } catch (Exception e) {
+                    }
+                });
+                break;
+            case "3.6.0":
+                updateSchema("3.6.0", 3006000, "3.6.1", 3006001, null);
+                break;
+            case "3.6.1":
+                updateSchema("3.6.1", 3006001, "3.6.2", 3006002, null);
                 break;
             default:
                 throw new RuntimeException("Unable to upgrade SQL database, unsupported fromVersion: " + fromVersion);
+        }
+    }
+
+    private void updateSchema(String oldVersionStr, int oldVersion, String newVersionStr, int newVersion, Consumer<Connection> additionalAction) {
+        try (Connection conn = DriverManager.getConnection(dbUrl, dbUserName, dbPassword)) {
+            log.info("Updating schema ...");
+            if (isOldSchema(conn, oldVersion)) {
+                Path schemaUpdateFile = Paths.get(installScripts.getDataDir(), "upgrade", oldVersionStr, SCHEMA_UPDATE_SQL);
+                loadSql(schemaUpdateFile, conn);
+                if (additionalAction != null) {
+                    additionalAction.accept(conn);
+                }
+                conn.createStatement().execute("UPDATE tb_schema_settings SET schema_version = " + newVersion + ";");
+                log.info("Schema updated to version {}", newVersionStr);
+            } else {
+                log.info("Skip schema re-update to version {}. Use env flag 'SKIP_SCHEMA_VERSION_CHECK' to force the re-update.", newVersionStr);
+            }
+        } catch (Exception e) {
+            log.error("Failed updating schema!!!", e);
         }
     }
 
@@ -758,6 +812,10 @@ public class SqlDatabaseUpgradeService implements DatabaseEntitiesUpgradeService
     }
 
     protected boolean isOldSchema(Connection conn, long fromVersion) {
+        if (DefaultDataUpdateService.getEnv("SKIP_SCHEMA_VERSION_CHECK", false)) {
+            log.info("Skipped DB schema version check due to SKIP_SCHEMA_VERSION_CHECK set to true!");
+            return true;
+        }
         boolean isOldSchema = true;
         try {
             Statement statement = conn.createStatement();

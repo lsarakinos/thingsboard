@@ -15,27 +15,90 @@
  */
 package org.thingsboard.server.service.edge.rpc.processor.device;
 
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.util.Pair;
 import org.springframework.stereotype.Component;
+import org.thingsboard.common.util.JacksonUtil;
 import org.thingsboard.server.common.data.DeviceProfile;
 import org.thingsboard.server.common.data.EdgeUtils;
+import org.thingsboard.server.common.data.edge.Edge;
 import org.thingsboard.server.common.data.edge.EdgeEvent;
+import org.thingsboard.server.common.data.edge.EdgeEventActionType;
+import org.thingsboard.server.common.data.edge.EdgeEventType;
+import org.thingsboard.server.common.data.id.DashboardId;
 import org.thingsboard.server.common.data.id.DeviceProfileId;
+import org.thingsboard.server.common.data.id.EdgeId;
+import org.thingsboard.server.common.data.id.RuleChainId;
 import org.thingsboard.server.common.data.id.TenantId;
+import org.thingsboard.server.common.data.msg.TbMsgType;
+import org.thingsboard.server.common.msg.TbMsgMetaData;
+import org.thingsboard.server.dao.exception.DataValidationException;
 import org.thingsboard.server.gen.edge.v1.DeviceProfileUpdateMsg;
 import org.thingsboard.server.gen.edge.v1.DownlinkMsg;
+import org.thingsboard.server.gen.edge.v1.EdgeVersion;
 import org.thingsboard.server.gen.edge.v1.UpdateMsgType;
-import org.thingsboard.server.gen.transport.TransportProtos;
 import org.thingsboard.server.queue.util.TbCoreComponent;
-import org.thingsboard.server.service.edge.rpc.processor.BaseEdgeProcessor;
+import org.thingsboard.server.service.edge.rpc.constructor.device.DeviceMsgConstructor;
+import org.thingsboard.server.service.edge.rpc.utils.EdgeVersionUtils;
+
+import java.util.UUID;
 
 @Component
 @Slf4j
 @TbCoreComponent
-public class DeviceProfileEdgeProcessor extends BaseEdgeProcessor {
+public class DeviceProfileEdgeProcessor extends BaseDeviceProfileProcessor {
 
-    public DownlinkMsg convertDeviceProfileEventToDownlink(EdgeEvent edgeEvent) {
+    public ListenableFuture<Void> processDeviceProfileMsgFromEdge(TenantId tenantId, Edge edge, DeviceProfileUpdateMsg deviceProfileUpdateMsg, EdgeVersion edgeVersion) {
+        log.trace("[{}] executing processDeviceProfileMsgFromEdge [{}] from edge [{}]", tenantId, deviceProfileUpdateMsg, edge.getId());
+        DeviceProfileId deviceProfileId = new DeviceProfileId(new UUID(deviceProfileUpdateMsg.getIdMSB(), deviceProfileUpdateMsg.getIdLSB()));
+        try {
+            edgeSynchronizationManager.getEdgeId().set(edge.getId());
+
+            switch (deviceProfileUpdateMsg.getMsgType()) {
+                case ENTITY_CREATED_RPC_MESSAGE:
+                case ENTITY_UPDATED_RPC_MESSAGE:
+                    saveOrUpdateDeviceProfile(tenantId, deviceProfileId, deviceProfileUpdateMsg, edge, edgeVersion);
+                    return Futures.immediateFuture(null);
+                case ENTITY_DELETED_RPC_MESSAGE:
+                case UNRECOGNIZED:
+                default:
+                    return handleUnsupportedMsgType(deviceProfileUpdateMsg.getMsgType());
+            }
+        } catch (DataValidationException e) {
+            log.warn("[{}] Failed to process DeviceProfileUpdateMsg from Edge [{}]", tenantId, deviceProfileUpdateMsg, e);
+            return Futures.immediateFailedFuture(e);
+        } finally {
+            edgeSynchronizationManager.getEdgeId().remove();
+        }
+    }
+
+    private void saveOrUpdateDeviceProfile(TenantId tenantId, DeviceProfileId deviceProfileId, DeviceProfileUpdateMsg deviceProfileUpdateMsg, Edge edge, EdgeVersion edgeVersion) {
+        Pair<Boolean, Boolean> resultPair = super.saveOrUpdateDeviceProfile(tenantId, deviceProfileId, deviceProfileUpdateMsg, edgeVersion);
+        Boolean created = resultPair.getFirst();
+        if (created) {
+            createRelationFromEdge(tenantId, edge.getId(), deviceProfileId);
+            pushDeviceProfileCreatedEventToRuleEngine(tenantId, edge, deviceProfileId);
+        }
+        Boolean deviceProfileNameUpdated = resultPair.getSecond();
+        if (deviceProfileNameUpdated) {
+            saveEdgeEvent(tenantId, edge.getId(), EdgeEventType.DEVICE_PROFILE, EdgeEventActionType.UPDATED, deviceProfileId, null);
+        }
+    }
+
+    private void pushDeviceProfileCreatedEventToRuleEngine(TenantId tenantId, Edge edge, DeviceProfileId deviceProfileId) {
+        try {
+            DeviceProfile deviceProfile = deviceProfileService.findDeviceProfileById(tenantId, deviceProfileId);
+            String deviceProfileAsString = JacksonUtil.toString(deviceProfile);
+            TbMsgMetaData msgMetaData = getEdgeActionTbMsgMetaData(edge, null);
+            pushEntityEventToRuleEngine(tenantId, deviceProfileId, null, TbMsgType.ENTITY_CREATED, deviceProfileAsString, msgMetaData);
+        } catch (Exception e) {
+            log.warn("[{}][{}] Failed to push device profile action to rule engine: {}", tenantId, deviceProfileId, TbMsgType.ENTITY_CREATED.name(), e);
+        }
+    }
+
+    public DownlinkMsg convertDeviceProfileEventToDownlink(EdgeEvent edgeEvent, EdgeId edgeId, EdgeVersion edgeVersion) {
         DeviceProfileId deviceProfileId = new DeviceProfileId(edgeEvent.getEntityId());
         DownlinkMsg downlinkMsg = null;
         switch (edgeEvent.getAction()) {
@@ -44,8 +107,9 @@ public class DeviceProfileEdgeProcessor extends BaseEdgeProcessor {
                 DeviceProfile deviceProfile = deviceProfileService.findDeviceProfileById(edgeEvent.getTenantId(), deviceProfileId);
                 if (deviceProfile != null) {
                     UpdateMsgType msgType = getUpdateMsgType(edgeEvent.getAction());
-                    DeviceProfileUpdateMsg deviceProfileUpdateMsg =
-                            deviceProfileMsgConstructor.constructDeviceProfileUpdatedMsg(msgType, deviceProfile);
+                    deviceProfile = checkIfDeviceProfileDefaultFieldsAssignedToEdge(edgeEvent.getTenantId(), edgeId, deviceProfile, edgeVersion);
+                    DeviceProfileUpdateMsg deviceProfileUpdateMsg = ((DeviceMsgConstructor)
+                            deviceMsgConstructorFactory.getMsgConstructorByEdgeVersion(edgeVersion)).constructDeviceProfileUpdatedMsg(msgType, deviceProfile);
                     downlinkMsg = DownlinkMsg.newBuilder()
                             .setDownlinkMsgId(EdgeUtils.nextPositiveInt())
                             .addDeviceProfileUpdateMsg(deviceProfileUpdateMsg)
@@ -53,8 +117,8 @@ public class DeviceProfileEdgeProcessor extends BaseEdgeProcessor {
                 }
                 break;
             case DELETED:
-                DeviceProfileUpdateMsg deviceProfileUpdateMsg =
-                        deviceProfileMsgConstructor.constructDeviceProfileDeleteMsg(deviceProfileId);
+                DeviceProfileUpdateMsg deviceProfileUpdateMsg = ((DeviceMsgConstructor)
+                        deviceMsgConstructorFactory.getMsgConstructorByEdgeVersion(edgeVersion)).constructDeviceProfileDeleteMsg(deviceProfileId);
                 downlinkMsg = DownlinkMsg.newBuilder()
                         .setDownlinkMsgId(EdgeUtils.nextPositiveInt())
                         .addDeviceProfileUpdateMsg(deviceProfileUpdateMsg)
@@ -64,7 +128,24 @@ public class DeviceProfileEdgeProcessor extends BaseEdgeProcessor {
         return downlinkMsg;
     }
 
-    public ListenableFuture<Void> processDeviceProfileNotification(TenantId tenantId, TransportProtos.EdgeNotificationMsgProto edgeNotificationMsg) {
-        return processEntityNotificationForAllEdges(tenantId, edgeNotificationMsg);
+    @Override
+    protected void setDefaultRuleChainId(TenantId tenantId, DeviceProfile deviceProfile, RuleChainId ruleChainId) {
+        deviceProfile.setDefaultRuleChainId(ruleChainId);
+    }
+
+    @Override
+    protected void setDefaultEdgeRuleChainId(DeviceProfile deviceProfile, RuleChainId ruleChainId, DeviceProfileUpdateMsg deviceProfileUpdateMsg, EdgeVersion edgeVersion) {
+        UUID defaultEdgeRuleChainUUID = EdgeVersionUtils.isEdgeVersionOlderThan_3_6_2(edgeVersion)
+                ? safeGetUUID(deviceProfileUpdateMsg.getDefaultRuleChainIdMSB(), deviceProfileUpdateMsg.getDefaultRuleChainIdLSB())
+                : ruleChainId != null ? ruleChainId.getId() : null;
+        deviceProfile.setDefaultEdgeRuleChainId(defaultEdgeRuleChainUUID != null ? new RuleChainId(defaultEdgeRuleChainUUID) : null);
+    }
+
+    @Override
+    protected void setDefaultDashboardId(TenantId tenantId, DashboardId dashboardId, DeviceProfile deviceProfile, DeviceProfileUpdateMsg deviceProfileUpdateMsg, EdgeVersion edgeVersion) {
+        UUID defaultDashboardUUID = EdgeVersionUtils.isEdgeVersionOlderThan_3_6_2(edgeVersion)
+                ? safeGetUUID(deviceProfileUpdateMsg.getDefaultDashboardIdMSB(), deviceProfileUpdateMsg.getDefaultDashboardIdLSB())
+                : deviceProfile.getDefaultDashboardId() != null ? deviceProfile.getDefaultDashboardId().getId() : (dashboardId != null ? dashboardId.getId() : null);
+        deviceProfile.setDefaultDashboardId(defaultDashboardUUID != null ? new DashboardId(defaultDashboardUUID) : null);
     }
 }

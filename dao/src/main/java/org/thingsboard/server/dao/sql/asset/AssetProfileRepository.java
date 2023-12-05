@@ -24,6 +24,7 @@ import org.thingsboard.server.common.data.asset.AssetProfileInfo;
 import org.thingsboard.server.dao.ExportableEntityRepository;
 import org.thingsboard.server.dao.model.sql.AssetProfileEntity;
 
+import java.util.List;
 import java.util.UUID;
 
 public interface AssetProfileRepository extends JpaRepository<AssetProfileEntity, UUID>, ExportableEntityRepository<AssetProfileEntity> {
@@ -34,14 +35,14 @@ public interface AssetProfileRepository extends JpaRepository<AssetProfileEntity
     AssetProfileInfo findAssetProfileInfoById(@Param("assetProfileId") UUID assetProfileId);
 
     @Query("SELECT a FROM AssetProfileEntity a WHERE " +
-            "a.tenantId = :tenantId AND LOWER(a.searchText) LIKE LOWER(CONCAT('%', :textSearch, '%'))")
+            "a.tenantId = :tenantId AND (:textSearch IS NULL OR ilike(a.name, CONCAT('%', :textSearch, '%')) = true)")
     Page<AssetProfileEntity> findAssetProfiles(@Param("tenantId") UUID tenantId,
                                                @Param("textSearch") String textSearch,
                                                Pageable pageable);
 
     @Query("SELECT new org.thingsboard.server.common.data.asset.AssetProfileInfo(a.id, a.tenantId, a.name, a.image, a.defaultDashboardId) " +
             "FROM AssetProfileEntity a WHERE " +
-            "a.tenantId = :tenantId AND LOWER(a.searchText) LIKE LOWER(CONCAT('%', :textSearch, '%'))")
+            "a.tenantId = :tenantId AND (:textSearch IS NULL OR ilike(a.name, CONCAT('%', :textSearch, '%')) = true)")
     Page<AssetProfileInfo> findAssetProfileInfos(@Param("tenantId") UUID tenantId,
                                                  @Param("textSearch") String textSearch,
                                                  Pageable pageable);
@@ -59,5 +60,15 @@ public interface AssetProfileRepository extends JpaRepository<AssetProfileEntity
 
     @Query("SELECT externalId FROM AssetProfileEntity WHERE id = :id")
     UUID getExternalIdById(@Param("id") UUID id);
+
+    @Query("SELECT new org.thingsboard.server.common.data.asset.AssetProfileInfo(a.id, a.tenantId, a.name, a.image, a.defaultDashboardId) " +
+            "FROM AssetProfileEntity a WHERE a.tenantId = :tenantId AND a.image = :imageLink")
+    List<AssetProfileInfo> findByTenantAndImageLink(@Param("tenantId") UUID tenantId, @Param("imageLink") String imageLink, Pageable page);
+
+    @Query("SELECT new org.thingsboard.server.common.data.asset.AssetProfileInfo(a.id, a.tenantId, a.name, a.image, a.defaultDashboardId) " +
+            "FROM AssetProfileEntity a WHERE a.image = :imageLink")
+    List<AssetProfileInfo> findByImageLink(@Param("imageLink") String imageLink, Pageable page);
+
+    Page<AssetProfileEntity> findAllByImageNotNull(Pageable pageable);
 
 }
