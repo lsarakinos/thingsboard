@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.thingsboard.server.common.data.EntityInfo;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.asset.AssetProfile;
 import org.thingsboard.server.common.data.asset.AssetProfileInfo;
@@ -55,14 +55,6 @@ public class JpaAssetProfileDao extends JpaAbstractDao<AssetProfileEntity, Asset
     @Override
     public AssetProfileInfo findAssetProfileInfoById(TenantId tenantId, UUID assetProfileId) {
         return assetProfileRepository.findAssetProfileInfoById(assetProfileId);
-    }
-
-    @Transactional
-    @Override
-    public AssetProfile saveAndFlush(TenantId tenantId, AssetProfile assetProfile) {
-        AssetProfile result = save(tenantId, assetProfile);
-        assetProfileRepository.flush();
-        return result;
     }
 
     @Override
@@ -104,6 +96,13 @@ public class JpaAssetProfileDao extends JpaAbstractDao<AssetProfileEntity, Asset
     }
 
     @Override
+    public List<EntityInfo> findTenantAssetProfileNames(UUID tenantId, boolean activeOnly) {
+        return activeOnly ?
+                assetProfileRepository.findActiveTenantAssetProfileNames(tenantId) :
+                assetProfileRepository.findAllTenantAssetProfileNames(tenantId);
+    }
+
+    @Override
     public AssetProfile findByTenantIdAndExternalId(UUID tenantId, UUID externalId) {
         return DaoUtil.getData(assetProfileRepository.findByTenantIdAndExternalId(tenantId, externalId));
     }
@@ -122,6 +121,11 @@ public class JpaAssetProfileDao extends JpaAbstractDao<AssetProfileEntity, Asset
     public AssetProfileId getExternalIdByInternal(AssetProfileId internalId) {
         return Optional.ofNullable(assetProfileRepository.getExternalIdById(internalId.getId()))
                 .map(AssetProfileId::new).orElse(null);
+    }
+
+    @Override
+    public AssetProfile findDefaultEntityByTenantId(UUID tenantId) {
+        return findDefaultAssetProfile(TenantId.fromUUID(tenantId));
     }
 
     @Override

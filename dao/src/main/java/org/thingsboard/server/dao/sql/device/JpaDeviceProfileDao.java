@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 import org.thingsboard.server.common.data.DeviceProfile;
 import org.thingsboard.server.common.data.DeviceProfileInfo;
 import org.thingsboard.server.common.data.DeviceTransportType;
+import org.thingsboard.server.common.data.EntityInfo;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.StringUtils;
 import org.thingsboard.server.common.data.id.DeviceProfileId;
@@ -59,14 +59,6 @@ public class JpaDeviceProfileDao extends JpaAbstractDao<DeviceProfileEntity, Dev
     @Override
     public DeviceProfileInfo findDeviceProfileInfoById(TenantId tenantId, UUID deviceProfileId) {
         return deviceProfileRepository.findDeviceProfileInfoById(deviceProfileId);
-    }
-
-    @Transactional
-    @Override
-    public DeviceProfile saveAndFlush(TenantId tenantId, DeviceProfile deviceProfile) {
-        DeviceProfile result = save(tenantId, deviceProfile);
-        deviceProfileRepository.flush();
-        return result;
     }
 
     @Override
@@ -122,6 +114,13 @@ public class JpaDeviceProfileDao extends JpaAbstractDao<DeviceProfileEntity, Dev
     }
 
     @Override
+    public List<EntityInfo> findTenantDeviceProfileNames(UUID tenantId, boolean activeOnly) {
+        return activeOnly ?
+                deviceProfileRepository.findActiveTenantDeviceProfileNames(tenantId) :
+                deviceProfileRepository.findAllTenantDeviceProfileNames(tenantId);
+    }
+
+    @Override
     public DeviceProfile findByTenantIdAndExternalId(UUID tenantId, UUID externalId) {
         return DaoUtil.getData(deviceProfileRepository.findByTenantIdAndExternalId(tenantId, externalId));
     }
@@ -140,6 +139,11 @@ public class JpaDeviceProfileDao extends JpaAbstractDao<DeviceProfileEntity, Dev
     public DeviceProfileId getExternalIdByInternal(DeviceProfileId internalId) {
         return Optional.ofNullable(deviceProfileRepository.getExternalIdById(internalId.getId()))
                 .map(DeviceProfileId::new).orElse(null);
+    }
+
+    @Override
+    public DeviceProfile findDefaultEntityByTenantId(UUID tenantId) {
+        return findDefaultDeviceProfile(TenantId.fromUUID(tenantId));
     }
 
     @Override

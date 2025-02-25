@@ -1,5 +1,5 @@
 ///
-/// Copyright © 2016-2023 The Thingsboard Authors
+/// Copyright © 2016-2025 The Thingsboard Authors
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -18,36 +18,47 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { PageLink } from '@shared/models/page/page-link';
 import { defaultHttpOptionsFromConfig, defaultHttpUploadOptions, RequestConfig } from '@core/http/http-utils';
-import { Observable, of } from 'rxjs';
+import { Observable, of, ReplaySubject } from 'rxjs';
 import { PageData } from '@shared/models/page/page-data';
 import {
-  NO_IMAGE_DATA_URI,
+  ImageExportData,
   ImageResourceInfo,
-  imageResourceType,
   ImageResourceType,
-  IMAGES_URL_PREFIX, isImageResourceUrl, ImageExportData, removeTbImagePrefix
+  imageResourceType,
+  IMAGES_URL_PREFIX,
+  isImageResourceUrl,
+  NO_IMAGE_DATA_URI,
+  removeTbImagePrefix,
+  ResourceSubType
 } from '@shared/models/resource.models';
 import { catchError, map, switchMap } from 'rxjs/operators';
 import { DomSanitizer, SafeUrl } from '@angular/platform-browser';
-import { blobToBase64 } from '@core/utils';
+import { blobToBase64, blobToText } from '@core/utils';
+import { ResourcesService } from '@core/services/resources.service';
 
 @Injectable({
   providedIn: 'root'
 })
 export class ImageService {
+
+  private imagesLoading: { [url: string]: ReplaySubject<Blob> } = {};
+
   constructor(
     private http: HttpClient,
-    private sanitizer: DomSanitizer
+    private sanitizer: DomSanitizer,
+    private resourcesService: ResourcesService
   ) {
   }
 
-  public uploadImage(file: File, title: string, config?: RequestConfig): Observable<ImageResourceInfo> {
+  public uploadImage(file: File, title: string, imageSubType: ResourceSubType = ResourceSubType.IMAGE,
+                     config?: RequestConfig): Observable<ImageResourceInfo> {
     if (!config) {
       config = {};
     }
     const formData = new FormData();
     formData.append('file', file);
     formData.append('title', title);
+    formData.append('imageSubType', imageSubType);
     return this.http.post<ImageResourceInfo>('/api/image', formData,
       defaultHttpUploadOptions(config.ignoreLoading, config.ignoreErrors, config.resendRequest));
   }
@@ -69,9 +80,17 @@ export class ImageService {
       imageInfo, defaultHttpOptionsFromConfig(config));
   }
 
-  public getImages(pageLink: PageLink, includeSystemImages = false, config?: RequestConfig): Observable<PageData<ImageResourceInfo>> {
+  public updateImagePublicStatus(imageInfo: ImageResourceInfo, isPublic: boolean, config?: RequestConfig): Observable<ImageResourceInfo> {
+    const type = imageResourceType(imageInfo);
+    const key = encodeURIComponent(imageInfo.resourceKey);
+    return this.http.put<ImageResourceInfo>(`${IMAGES_URL_PREFIX}/${type}/${key}/public/${isPublic}`,
+      imageInfo, defaultHttpOptionsFromConfig(config));
+  }
+
+  public getImages(pageLink: PageLink, includeSystemImages = false,
+                   imageSubType: ResourceSubType = ResourceSubType.IMAGE, config?: RequestConfig): Observable<PageData<ImageResourceInfo>> {
     return this.http.get<PageData<ImageResourceInfo>>(
-      `${IMAGES_URL_PREFIX}${pageLink.toQuery()}&includeSystemImages=${includeSystemImages}`,
+      `${IMAGES_URL_PREFIX}${pageLink.toQuery()}&imageSubType=${imageSubType}&includeSystemImages=${includeSystemImages}`,
       defaultHttpOptionsFromConfig(config));
   }
 
@@ -86,13 +105,62 @@ export class ImageService {
     parts[parts.length - 1] = encodeURIComponent(key);
     const encodedUrl = parts.join('/');
     const imageLink = preview ? (encodedUrl + '/preview') : encodedUrl;
-    const options = defaultHttpOptionsFromConfig({ignoreLoading: true, ignoreErrors: true});
-    return this.http
-    .get(imageLink, {...options, ...{ responseType: 'blob' } }).pipe(
+    return this.loadImageDataUrl(imageLink, asString, emptyUrl);
+  }
+
+  private loadImageDataUrl(imageLink: string, asString = false, emptyUrl = NO_IMAGE_DATA_URI): Observable<SafeUrl | string> {
+    let request: ReplaySubject<Blob>;
+    if (this.imagesLoading[imageLink]) {
+      request = this.imagesLoading[imageLink];
+    } else {
+      request = new ReplaySubject<Blob>(1);
+      this.imagesLoading[imageLink] = request;
+      const options = defaultHttpOptionsFromConfig({ignoreLoading: true, ignoreErrors: true});
+      this.http.get(imageLink, {...options, ...{ responseType: 'blob' } }).subscribe({
+        next: (value) => {
+          request.next(value);
+          request.complete();
+        },
+        error: err => {
+          request.error(err);
+        },
+        complete: () => {
+          delete this.imagesLoading[imageLink];
+        }
+      });
+    }
+    return request.pipe(
       switchMap(val => blobToBase64(val).pipe(
-          map((dataUrl) => asString ? dataUrl : this.sanitizer.bypassSecurityTrustUrl(dataUrl))
-        )),
+        map((dataUrl) => asString ? dataUrl : this.sanitizer.bypassSecurityTrustUrl(dataUrl))
+      )),
       catchError(() => of(asString ? emptyUrl : this.sanitizer.bypassSecurityTrustUrl(emptyUrl)))
+    );
+  }
+
+  public getImageString(imageUrl: string): Observable<string> {
+    imageUrl = removeTbImagePrefix(imageUrl);
+    let request: ReplaySubject<Blob>;
+    if (this.imagesLoading[imageUrl]) {
+      request = this.imagesLoading[imageUrl];
+    } else {
+      request = new ReplaySubject<Blob>(1);
+      this.imagesLoading[imageUrl] = request;
+      const options = defaultHttpOptionsFromConfig({ignoreLoading: true, ignoreErrors: true});
+      this.http.get(imageUrl, {...options, ...{ responseType: 'blob' } }).subscribe({
+        next: (value) => {
+          request.next(value);
+          request.complete();
+        },
+        error: err => {
+          request.error(err);
+        },
+        complete: () => {
+          delete this.imagesLoading[imageUrl];
+        }
+      });
+    }
+    return request.pipe(
+      switchMap(val => blobToText(val))
     );
   }
 
@@ -106,34 +174,7 @@ export class ImageService {
   }
 
   public downloadImage(type: ImageResourceType, key: string): Observable<any> {
-    return this.http.get(`${IMAGES_URL_PREFIX}/${type}/${encodeURIComponent(key)}`, {
-      responseType: 'arraybuffer',
-      observe: 'response'
-    }).pipe(
-      map((response) => {
-        const headers = response.headers;
-        const filename = headers.get('x-filename');
-        const contentType = headers.get('content-type');
-        const linkElement = document.createElement('a');
-        try {
-          const blob = new Blob([response.body], {type: contentType});
-          const url = URL.createObjectURL(blob);
-          linkElement.setAttribute('href', url);
-          linkElement.setAttribute('download', filename);
-          const clickEvent = new MouseEvent('click',
-            {
-              view: window,
-              bubbles: true,
-              cancelable: false
-            }
-          );
-          linkElement.dispatchEvent(clickEvent);
-          return null;
-        } catch (e) {
-          throw e;
-        }
-      })
-    );
+    return this.resourcesService.downloadResource(`${IMAGES_URL_PREFIX}/${type}/${encodeURIComponent(key)}`);
   }
 
   public deleteImage(type: ImageResourceType, key: string, force = false, config?: RequestConfig) {

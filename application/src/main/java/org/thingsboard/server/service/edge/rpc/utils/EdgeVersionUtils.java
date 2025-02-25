@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,5 @@ public final class EdgeVersionUtils {
 
     public static boolean isEdgeVersionOlderThan(EdgeVersion currentVersion, EdgeVersion requiredVersion) {
         return currentVersion.ordinal() < requiredVersion.ordinal();
-    }
-
-    public static boolean isEdgeVersionOlderThan_3_6_2(EdgeVersion currentVersion) {
-        return isEdgeVersionOlderThan(currentVersion, EdgeVersion.V_3_6_2);
     }
 }

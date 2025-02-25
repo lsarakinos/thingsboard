@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ public class OtaPackageEdgeTest extends AbstractEdgeTest {
         AbstractMessage latestMessage = edgeImitator.getLatestMessage();
         Assert.assertTrue(latestMessage instanceof OtaPackageUpdateMsg);
         OtaPackageUpdateMsg otaPackageUpdateMsg = (OtaPackageUpdateMsg) latestMessage;
-        OtaPackage otaPackage = JacksonUtil.fromStringIgnoreUnknownProperties(otaPackageUpdateMsg.getEntity(), OtaPackage.class);
+        OtaPackage otaPackage = JacksonUtil.fromString(otaPackageUpdateMsg.getEntity(), OtaPackage.class, true);
         Assert.assertNotNull(otaPackage);
         Assert.assertEquals(UpdateMsgType.ENTITY_CREATED_RPC_MESSAGE, otaPackageUpdateMsg.getMsgType());
         Assert.assertEquals(savedFirmwareInfo.getId(), otaPackage.getId());
@@ -112,7 +112,7 @@ public class OtaPackageEdgeTest extends AbstractEdgeTest {
         AbstractMessage latestMessage = edgeImitator.getLatestMessage();
         Assert.assertTrue(latestMessage instanceof OtaPackageUpdateMsg);
         OtaPackageUpdateMsg otaPackageUpdateMsg = (OtaPackageUpdateMsg) latestMessage;
-        OtaPackage otaPackage = JacksonUtil.fromStringIgnoreUnknownProperties(otaPackageUpdateMsg.getEntity(), OtaPackage.class);
+        OtaPackage otaPackage = JacksonUtil.fromString(otaPackageUpdateMsg.getEntity(), OtaPackage.class, true);
         Assert.assertNotNull(otaPackage);
         Assert.assertEquals(UpdateMsgType.ENTITY_UPDATED_RPC_MESSAGE, otaPackageUpdateMsg.getMsgType());
         Assert.assertEquals(savedFirmwareInfo.getId(), otaPackage.getId());

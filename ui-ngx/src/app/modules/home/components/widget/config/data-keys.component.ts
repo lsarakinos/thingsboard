@@ -1,5 +1,5 @@
 ///
-/// Copyright © 2016-2023 The Thingsboard Authors
+/// Copyright © 2016-2025 The Thingsboard Authors
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 import { COMMA, ENTER, SEMICOLON } from '@angular/cdk/keycodes';
 import {
-  ChangeDetectorRef,
   Component,
+  DestroyRef,
   ElementRef,
   forwardRef,
   Input,
@@ -33,30 +33,29 @@ import {
 import {
   AbstractControl,
   ControlValueAccessor,
-  FormGroupDirective, NG_VALIDATORS,
+  FormBuilder,
+  FormControl,
+  FormGroup,
+  FormGroupDirective,
+  NG_VALIDATORS,
   NG_VALUE_ACCESSOR,
   NgForm,
-  UntypedFormBuilder,
-  UntypedFormControl,
-  UntypedFormGroup,
-  ValidationErrors, Validator
+  ValidationErrors,
+  Validator
 } from '@angular/forms';
-import { Observable, of } from 'rxjs';
-import { filter, map, mergeMap, publishReplay, refCount, share, tap } from 'rxjs/operators';
-import { Store } from '@ngrx/store';
-import { AppState } from '@app/core/core.state';
+import { Observable, of, ReplaySubject } from 'rxjs';
+import { filter, map, mergeMap, share, tap } from 'rxjs/operators';
 import { TranslateService } from '@ngx-translate/core';
 import { MatAutocomplete, MatAutocompleteTrigger } from '@angular/material/autocomplete';
 import { MatChipGrid, MatChipInputEvent, MatChipRow } from '@angular/material/chips';
 import { coerceBooleanProperty } from '@angular/cdk/coercion';
 import { DataKeyType } from '@shared/models/telemetry/telemetry.models';
-import { DataKey, DatasourceType, JsonSettingsSchema, Widget, widgetType } from '@shared/models/widget.models';
+import { DataKey, DatasourceType, Widget, widgetType } from '@shared/models/widget.models';
 import { IAliasController } from '@core/api/widget-api.models';
-import { DataKeysCallbacks } from './data-keys.component.models';
+import { DataKeySettingsFunction } from './data-keys.component.models';
 import { alarmFields } from '@shared/models/alarm.models';
 import { UtilsService } from '@core/services/utils.service';
 import { ErrorStateMatcher } from '@angular/material/core';
-import { TruncatePipe } from '@shared/pipe/truncate.pipe';
 import { MatDialog } from '@angular/material/dialog';
 import {
   DataKeyConfigDialogComponent,
@@ -71,6 +70,9 @@ import { coerceBoolean } from '@shared/decorators/coercion';
 import { DatasourceComponent } from '@home/components/widget/config/datasource.component';
 import { ColorPickerPanelComponent } from '@shared/components/color-picker/color-picker-panel.component';
 import { TbPopoverService } from '@shared/components/popover.service';
+import { WidgetConfigCallbacks } from '@home/components/widget/config/widget-config.component.models';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { FormProperty } from '@shared/models/dynamic-form.models';
 
 @Component({
   selector: 'tb-data-keys',
@@ -112,11 +114,10 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     return this.datasourceComponent.hideDataKeyDecimals;
   }
 
-  datasourceTypes = DatasourceType;
   widgetTypes = widgetType;
   dataKeyTypes = DataKeyType;
 
-  keysListFormGroup: UntypedFormGroup;
+  keysListFormGroup: FormGroup;
 
   modelValue: Array<DataKey> | null;
 
@@ -141,13 +142,20 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
 
   @Input()
   @coerceBoolean()
+  latestDataKeys = false;
+
+  @Input()
+  @coerceBoolean()
   simpleDataKeysLabel = false;
 
   @Input()
   aliasController: IAliasController;
 
   @Input()
-  datakeySettingsSchema: JsonSettingsSchema;
+  dataKeySettingsForm: FormProperty[];
+
+  @Input()
+  datakeySettingsFunction: DataKeySettingsFunction;
 
   @Input()
   dataKeySettingsDirective: string;
@@ -159,7 +167,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
   widget: Widget;
 
   @Input()
-  callbacks: DataKeysCallbacks;
+  callbacks: WidgetConfigCallbacks;
 
   @Input()
   entityAliasId: string;
@@ -208,23 +216,21 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
 
   private dirty = false;
 
-  private propagateChange = (v: any) => { };
+  private propagateChange = (_v: any) => { };
 
   private keysRequired = this._keysRequired.bind(this);
   private keysValidator = this._keysValidator.bind(this);
 
-  constructor(private store: Store<AppState>,
-              @SkipSelf() private errorStateMatcher: ErrorStateMatcher,
+  constructor(@SkipSelf() private errorStateMatcher: ErrorStateMatcher,
               private datasourceComponent: DatasourceComponent,
-              public translate: TranslateService,
+              private translate: TranslateService,
               private utils: UtilsService,
               private dialog: MatDialog,
-              private fb: UntypedFormBuilder,
-              private cd: ChangeDetectorRef,
+              private fb: FormBuilder,
               private popoverService: TbPopoverService,
               private viewContainerRef: ViewContainerRef,
               private renderer: Renderer2,
-              public truncate: TruncatePipe) {
+              private destroyRef: DestroyRef) {
   }
 
   updateValidators() {
@@ -236,7 +242,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     this.keysListFormGroup.get('keys').updateValueAndValidity();
   }
 
-  private _keysRequired(control: AbstractControl): ValidationErrors | null {
+  private _keysRequired(_control: AbstractControl): ValidationErrors | null {
     const value = this.modelValue;
     if (value && Array.isArray(value) && value.length) {
       return null;
@@ -245,7 +251,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     }
   }
 
-  private _keysValidator(control: AbstractControl): ValidationErrors | null {
+  private _keysValidator(_control: AbstractControl): ValidationErrors | null {
     const value = this.modelValue;
     if (value && Array.isArray(value)) {
       if (value.some(v => isObject(v) && (!v.type || !v.name))) {
@@ -264,7 +270,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     }
   }
 
-  registerOnTouched(fn: any): void {
+  registerOnTouched(_fn: any): void {
   }
 
   ngOnInit() {
@@ -300,10 +306,19 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
           }
         }),
         filter((value) => typeof value === 'string'),
-        map((value) => value ? (typeof value === 'string' ? value : value.name) : ''),
+        map((value) => value ? value : ''),
         mergeMap(name => this.fetchKeys(name) ),
         share()
       );
+
+    this.aliasController.entityAliasesChanged.pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(aliasIds => {
+      if (aliasIds.includes(this.entityAliasId)) {
+        this.clearSearchCache();
+        this.dirty = true;
+      }
+    })
   }
 
   public maxDataKeysText(): string {
@@ -361,7 +376,8 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     if (this.widgetType === widgetType.alarm) {
       this.keys = this.utils.getDefaultAlarmDataKeys();
     } else if (this.isCountDatasource) {
-      this.keys = [this.callbacks.generateDataKey('count', DataKeyType.count, this.datakeySettingsSchema)];
+      this.keys = [this.callbacks.generateDataKey('count', DataKeyType.count, this.dataKeySettingsForm,
+        this.latestDataKeys, this.datakeySettingsFunction)];
     } else {
       this.keys = [];
     }
@@ -402,7 +418,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     }
   }
 
-  isErrorState(control: UntypedFormControl | null, form: FormGroupDirective | NgForm | null): boolean {
+  isErrorState(control: FormControl | null, form: FormGroupDirective | NgForm | null): boolean {
     const originalErrorState = this.errorStateMatcher.isErrorState(control, form);
     const customErrorState = this.keysListFormGroup.get('keys').hasError('dataKey');
     return originalErrorState || customErrorState;
@@ -431,7 +447,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
     this.dirty = true;
   }
 
-  validate(c: UntypedFormControl) {
+  validate(_c: FormControl) {
     return (this.keysListFormGroup.get('keys').hasError('dataKey')) ? {
       dataKeys: {
         valid: false,
@@ -447,7 +463,8 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
   }
 
   private addFromChipValue(chip: DataKey) {
-    const key = this.callbacks.generateDataKey(chip.name, chip.type, this.datakeySettingsSchema);
+    const key = this.callbacks.generateDataKey(chip.name, chip.type, this.dataKeySettingsForm, this.latestDataKeys,
+      this.datakeySettingsFunction);
     this.addKey(key);
   }
 
@@ -521,12 +538,13 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
       this.popoverService.hidePopover(trigger);
     } else {
       const colorPickerPopover = this.popoverService.displayPopover(trigger, this.renderer,
-        this.viewContainerRef, ColorPickerPanelComponent, 'left', true, null,
+        this.viewContainerRef, ColorPickerPanelComponent, ['leftTopOnly', 'leftOnly', 'leftBottomOnly'], true, null,
         {
-          color: key.color
+          color: key.color,
+          colorCancelButton: true
         },
         {},
-        {}, {}, true);
+        {}, {}, false, () => {}, {padding: '12px 4px 12px 12px'});
       colorPickerPopover.tbComponentRef.instance.popover = colorPickerPopover;
       colorPickerPopover.tbComponentRef.instance.colorSelected.subscribe((color) => {
         colorPickerPopover.hide();
@@ -545,7 +563,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
         panelClass: ['tb-dialog', 'tb-fullscreen-dialog'],
         data: {
           dataKey: deepClone(key),
-          dataKeySettingsSchema: this.datakeySettingsSchema,
+          dataKeySettingsForm: this.dataKeySettingsForm,
           dataKeySettingsDirective: this.dataKeySettingsDirective,
           dashboard: this.dashboard,
           aliasController: this.aliasController,
@@ -624,8 +642,12 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
         fetchObservable = of([]);
       }
       this.fetchObservable$ = fetchObservable.pipe(
-        publishReplay(1),
-        refCount()
+        share({
+          connector: () => new ReplaySubject(1),
+          resetOnError: false,
+          resetOnComplete: false,
+          resetOnRefCountZero: false
+        })
       );
     }
     return this.fetchObservable$;
@@ -637,7 +659,7 @@ export class DataKeysComponent implements ControlValueAccessor, OnInit, OnChange
   }
 
   textIsNotEmpty(text: string): boolean {
-    return text && text.length > 0;
+    return text?.length > 0;
   }
 
   clear(value: string = '', focus = true) {

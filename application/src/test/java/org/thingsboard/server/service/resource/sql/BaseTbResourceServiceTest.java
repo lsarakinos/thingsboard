@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,11 +47,11 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @DaoSqlTest
 public class BaseTbResourceServiceTest extends AbstractControllerTest {
@@ -129,7 +129,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
 
         Tenant tenant = new Tenant();
         tenant.setTitle("My tenant");
-        savedTenant = doPost("/api/tenant", tenant, Tenant.class);
+        savedTenant = saveTenant(tenant);
         tenantId = savedTenant.getId();
         Assert.assertNotNull(savedTenant);
 
@@ -146,9 +146,9 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
     @After
     public void afterTest() throws Exception {
         loginSysAdmin();
+        deleteTenant(savedTenant.getId());
 
-        doDelete("/api/tenant/" + savedTenant.getId().getId().toString())
-                .andExpect(status().isOk());
+        resourceService.deleteResourcesByTenantId(TenantId.SYS_TENANT_ID);
     }
 
     @Test
@@ -202,7 +202,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         }
     }
 
-    private TbResource createResource(String title, String filename) throws Exception {
+    private TbResourceInfo createResource(String title, String filename) throws Exception {
         TbResource resource = new TbResource();
         resource.setTenantId(tenantId);
         resource.setTitle(title);
@@ -222,25 +222,29 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         resource.setFileName(DEFAULT_FILE_NAME);
         resource.setData(TEST_DATA);
 
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
-        Assert.assertNotNull(savedResource);
-        Assert.assertNotNull(savedResource.getId());
-        Assert.assertTrue(savedResource.getCreatedTime() > 0);
-        assertEquals(resource.getTenantId(), savedResource.getTenantId());
-        assertEquals(resource.getTitle(), savedResource.getTitle());
-        assertEquals(resource.getResourceKey(), savedResource.getResourceKey());
-        assertArrayEquals(TEST_DATA, savedResource.getData());
-
-        savedResource.setTitle("My new resource");
-        savedResource.setData(null);
-
-        tbResourceService.save(savedResource);
         TbResource foundResource = resourceService.findResourceById(tenantId, savedResource.getId());
-        assertEquals(foundResource.getTitle(), savedResource.getTitle());
+
+        Assert.assertNotNull(foundResource);
+        Assert.assertNotNull(foundResource.getId());
+        Assert.assertTrue(foundResource.getCreatedTime() > 0);
+        assertEquals(resource.getTenantId(), foundResource.getTenantId());
+        assertEquals(resource.getTitle(), foundResource.getTitle());
+        assertEquals(resource.getResourceKey(), foundResource.getResourceKey());
+        assertArrayEquals(TEST_DATA, foundResource.getData());
+
+        String title = "My new resource";
+
+        foundResource.setTitle(title);
+        foundResource.setData(null);
+
+        tbResourceService.save(foundResource);
+        foundResource = resourceService.findResourceById(tenantId, foundResource.getId());
+        assertEquals(title, foundResource.getTitle());
         assertArrayEquals(foundResource.getData(), TEST_DATA);
 
-        tbResourceService.delete(savedResource, null);
+        tbResourceService.delete(foundResource, null);
     }
 
     @Test
@@ -251,17 +255,19 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         resource.setFileName("test_model.xml");
         resource.setEncodedData(Base64.getEncoder().encodeToString(LWM2M_TEST_MODEL.getBytes()));
 
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
-        Assert.assertNotNull(savedResource);
-        Assert.assertNotNull(savedResource.getId());
-        Assert.assertTrue(savedResource.getCreatedTime() > 0);
-        assertEquals(resource.getTenantId(), savedResource.getTenantId());
-        assertEquals("My first resource id=0 v1.0", savedResource.getTitle());
-        assertEquals("0_1.0", savedResource.getResourceKey());
-        assertArrayEquals(savedResource.getData(), LWM2M_TEST_MODEL.getBytes());
+        TbResource foundResource = resourceService.findResourceById(tenantId, savedResource.getId());
 
-        tbResourceService.delete(savedResource, null);
+        Assert.assertNotNull(foundResource);
+        Assert.assertNotNull(foundResource.getId());
+        Assert.assertTrue(foundResource.getCreatedTime() > 0);
+        assertEquals(resource.getTenantId(), foundResource.getTenantId());
+        assertEquals("My first resource id=0 v1.0", foundResource.getTitle());
+        assertEquals("0_1.0", foundResource.getResourceKey());
+        assertArrayEquals(foundResource.getData(), LWM2M_TEST_MODEL.getBytes());
+
+        tbResourceService.delete(foundResource, null);
     }
 
     @Test
@@ -271,38 +277,35 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         resource.setTitle("My resource");
         resource.setFileName(DEFAULT_FILE_NAME);
         resource.setData(TEST_DATA);
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
         assertEquals(TenantId.SYS_TENANT_ID, savedResource.getTenantId());
 
-        tbResourceService.delete(savedResource, null);
+        TbResource foundResource = resourceService.findResourceById(tenantId, savedResource.getId());
+        tbResourceService.delete(foundResource, null);
     }
 
     @Test
-    public void testSaveTbResourceWithExistsFileName() throws Exception {
+    public void testSaveTbResourceWithSameFileName() throws Exception {
         TbResource resource = new TbResource();
         resource.setTenantId(tenantId);
         resource.setResourceType(ResourceType.JKS);
         resource.setTitle("My resource");
         resource.setFileName(DEFAULT_FILE_NAME);
         resource.setData(TEST_DATA);
-
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
         TbResource resource2 = new TbResource();
-        resource.setTenantId(tenantId);
-        resource.setResourceType(ResourceType.JKS);
-        resource.setTitle("My resource");
-        resource.setFileName(DEFAULT_FILE_NAME);
-        resource.setData(TEST_DATA);
+        resource2.setTenantId(tenantId);
+        resource2.setResourceType(ResourceType.JKS);
+        resource2.setTitle("My resource");
+        resource2.setFileName(DEFAULT_FILE_NAME);
+        resource2.setData(TEST_DATA);
+        TbResourceInfo savedResource2 = tbResourceService.save(resource2);
 
-        try {
-            Assertions.assertThrows(DataValidationException.class, () -> {
-                tbResourceService.save(resource2);
-            });
-        } finally {
-            tbResourceService.delete(savedResource, null);
-        }
+        assertThat(savedResource2.getId()).isNotEqualTo(savedResource.getId());
+        assertThat(savedResource2.getFileName()).isEqualTo("test.jks");
+        assertThat(savedResource2.getResourceKey()).isEqualTo("test_(1).jks");
     }
 
     @Test
@@ -352,12 +355,13 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         resource.setTitle("My resource");
         resource.setFileName(DEFAULT_FILE_NAME);
         resource.setData(TEST_DATA);
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
         TbResource foundResource = resourceService.findResourceById(tenantId, savedResource.getId());
         Assert.assertNotNull(foundResource);
-        assertEquals(savedResource, foundResource);
-        tbResourceService.delete(savedResource, null);
+        assertEquals(savedResource, new TbResourceInfo(foundResource));
+        assertArrayEquals(TEST_DATA, foundResource.getData());
+        tbResourceService.delete(foundResource, null);
     }
 
     @Test
@@ -368,12 +372,13 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         resource.setTitle("My resource");
         resource.setFileName(DEFAULT_FILE_NAME);
         resource.setData(TEST_DATA);
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
         TbResource foundResource = resourceService.findResourceByTenantIdAndKey(tenantId, savedResource.getResourceType(), savedResource.getResourceKey());
         Assert.assertNotNull(foundResource);
-        assertEquals(savedResource, foundResource);
-        tbResourceService.delete(savedResource, null);
+        assertEquals(savedResource, new TbResourceInfo(foundResource));
+        assertArrayEquals(TEST_DATA, foundResource.getData());
+        tbResourceService.delete(foundResource, null);
     }
 
     @Test
@@ -383,11 +388,11 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         resource.setTitle("My resource");
         resource.setFileName(DEFAULT_FILE_NAME);
         resource.setData(TEST_DATA);
-        TbResource savedResource = tbResourceService.save(resource);
+        TbResourceInfo savedResource = tbResourceService.save(resource);
 
         TbResource foundResource = resourceService.findResourceById(tenantId, savedResource.getId());
         Assert.assertNotNull(foundResource);
-        tbResourceService.delete(savedResource, null);
+        tbResourceService.delete(foundResource, null);
         foundResource = resourceService.findResourceById(tenantId, savedResource.getId());
         Assert.assertNull(foundResource);
     }
@@ -397,7 +402,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         loginSysAdmin();
         Tenant tenant = new Tenant();
         tenant.setTitle("Test tenant");
-        tenant = doPost("/api/tenant", tenant, Tenant.class);
+        tenant = saveTenant(tenant);
 
         TenantId tenantId = tenant.getId();
 
@@ -441,8 +446,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         Assert.assertFalse(pageData.hasNext());
         Assert.assertTrue(pageData.getData().isEmpty());
 
-        doDelete("/api/tenant/" + tenantId.getId().toString())
-                .andExpect(status().isOk());
+        deleteTenant(tenantId);
     }
 
     @Test
@@ -451,7 +455,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
 
         Tenant tenant = new Tenant();
         tenant.setTitle("Test tenant");
-        tenant = doPost("/api/tenant", tenant, Tenant.class);
+        tenant = saveTenant(tenant);
 
         TenantId tenantId = tenant.getId();
 
@@ -476,7 +480,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
             resource.setResourceType(ResourceType.JKS);
             resource.setFileName(i + DEFAULT_FILE_NAME);
             resource.setData(TEST_DATA);
-            resources.add(new TbResourceInfo(tbResourceService.save(resource)));
+            resources.add(tbResourceService.save(resource));
         }
 
         List<TbResourceInfo> loadedResources = new ArrayList<>();
@@ -518,8 +522,7 @@ public class BaseTbResourceServiceTest extends AbstractControllerTest {
         Assert.assertFalse(pageData.hasNext());
         Assert.assertTrue(pageData.getData().isEmpty());
 
-        doDelete("/api/tenant/" + tenantId.getId().toString())
-                .andExpect(status().isOk());
+        deleteTenant(tenantId);
     }
 
 }

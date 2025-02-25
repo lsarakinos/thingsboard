@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import org.springframework.stereotype.Service;
 import org.thingsboard.server.cluster.TbClusterService;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.ImageDescriptor;
-import org.thingsboard.server.common.data.StringUtils;
+import org.thingsboard.server.common.data.ResourceExportData;
 import org.thingsboard.server.common.data.TbImageDeleteResult;
 import org.thingsboard.server.common.data.TbResource;
 import org.thingsboard.server.common.data.TbResourceInfo;
@@ -37,9 +37,18 @@ import org.thingsboard.server.dao.resource.ImageService;
 import org.thingsboard.server.gen.transport.TransportProtos;
 import org.thingsboard.server.queue.util.TbCoreComponent;
 import org.thingsboard.server.service.entitiy.AbstractTbEntityService;
+import org.thingsboard.server.service.security.model.SecurityUser;
+import org.thingsboard.server.service.security.permission.AccessControlService;
+import org.thingsboard.server.service.security.permission.Operation;
+import org.thingsboard.server.service.security.permission.Resource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import static org.thingsboard.server.common.data.StringUtils.isNotEmpty;
 
 @Service
 @Slf4j
@@ -48,13 +57,16 @@ public class DefaultTbImageService extends AbstractTbEntityService implements Tb
 
     private final TbClusterService clusterService;
     private final ImageService imageService;
+    private final AccessControlService accessControlService;
     private final Cache<ImageCacheKey, String> etagCache;
 
     public DefaultTbImageService(TbClusterService clusterService, ImageService imageService,
+                                 AccessControlService accessControlService,
                                  @Value("${cache.image.etag.timeToLiveInMinutes:44640}") int cacheTtl,
                                  @Value("${cache.image.etag.maxSize:10000}") int cacheMaxSize) {
         this.clusterService = clusterService;
         this.imageService = imageService;
+        this.accessControlService = accessControlService;
         this.etagCache = Caffeine.newBuilder()
                 .expireAfterAccess(cacheTtl, TimeUnit.MINUTES)
                 .maximumSize(cacheMaxSize)
@@ -72,8 +84,11 @@ public class DefaultTbImageService extends AbstractTbEntityService implements Tb
     }
 
     @Override
-    public void evictETag(ImageCacheKey imageCacheKey) {
+    public void evictETags(ImageCacheKey imageCacheKey) {
         etagCache.invalidate(imageCacheKey);
+        if (imageCacheKey.getPublicResourceKey() == null) {
+            etagCache.invalidate(imageCacheKey.withPreview(true));
+        }
     }
 
     @Override
@@ -82,32 +97,36 @@ public class DefaultTbImageService extends AbstractTbEntityService implements Tb
         TenantId tenantId = image.getTenantId();
         try {
             var oldEtag = getEtag(image);
-            if (image.getId() == null && StringUtils.isNotEmpty(image.getResourceKey())) {
-                var existingImage = imageService.getImageInfoByTenantIdAndKey(tenantId, image.getResourceKey());
+            TbResourceInfo existingImage = null;
+            if (image.getId() == null && isNotEmpty(image.getResourceKey())) {
+                existingImage = imageService.getImageInfoByTenantIdAndKey(tenantId, image.getResourceKey());
                 if (existingImage != null) {
                     image.setId(existingImage.getId());
                 }
             }
             TbResourceInfo savedImage = imageService.saveImage(image);
-            notificationEntityService.logEntityAction(tenantId, savedImage.getId(), savedImage, actionType, user);
+            logEntityActionService.logEntityAction(tenantId, savedImage.getId(), savedImage, actionType, user);
+
+            List<ImageCacheKey> toEvict = new ArrayList<>();
             if (oldEtag.isPresent()) {
                 var newEtag = getEtag(savedImage);
                 if (newEtag.isPresent() && !oldEtag.get().equals(newEtag.get())) {
-                    evictETag(new ImageCacheKey(image.getTenantId(), image.getResourceKey(), false));
-                    evictETag(new ImageCacheKey(image.getTenantId(), image.getResourceKey(), true));
-                    clusterService.broadcastToCore(TransportProtos.ToCoreNotificationMsg.newBuilder()
-                            .setResourceCacheInvalidateMsg(TransportProtos.ResourceCacheInvalidateMsg.newBuilder()
-                                    .setTenantIdMSB(tenantId.getId().getMostSignificantBits())
-                                    .setTenantIdLSB(tenantId.getId().getLeastSignificantBits())
-                                    .setResourceKey(image.getResourceKey())
-                                    .build())
-                            .build());
+                    toEvict.add(ImageCacheKey.forImage(tenantId, image.getResourceKey()));
+                    if (image.isPublic()) {
+                        toEvict.add(ImageCacheKey.forPublicImage(savedImage.getPublicResourceKey()));
+                    }
                 }
+            }
+            if (existingImage != null && image.isPublic() != existingImage.isPublic()) {
+                toEvict.add(ImageCacheKey.forPublicImage(image.getPublicResourceKey()));
+            }
+            if (!toEvict.isEmpty()) {
+                evictFromCache(tenantId, toEvict);
             }
             return savedImage;
         } catch (Exception e) {
             image.setData(null);
-            notificationEntityService.logEntityAction(tenantId, emptyId(EntityType.TB_RESOURCE), image, actionType, user, e);
+            logEntityActionService.logEntityAction(tenantId, emptyId(EntityType.TB_RESOURCE), new TbResourceInfo(image), actionType, user, e);
             throw e;
         }
     }
@@ -124,15 +143,19 @@ public class DefaultTbImageService extends AbstractTbEntityService implements Tb
     }
 
     @Override
-    public TbResourceInfo save(TbResourceInfo imageInfo, User user) {
+    public TbResourceInfo save(TbResourceInfo imageInfo, TbResourceInfo oldImageInfo, User user) {
         TenantId tenantId = imageInfo.getTenantId();
         TbResourceId imageId = imageInfo.getId();
         try {
             imageInfo = imageService.saveImageInfo(imageInfo);
-            notificationEntityService.logEntityAction(tenantId, imageId, imageInfo, ActionType.UPDATED, user);
+            logEntityActionService.logEntityAction(tenantId, imageId, imageInfo, ActionType.UPDATED, user);
+
+            if (imageInfo.isPublic() != oldImageInfo.isPublic()) {
+                evictFromCache(tenantId, List.of(ImageCacheKey.forPublicImage(imageInfo.getPublicResourceKey())));
+            }
             return imageInfo;
         } catch (Exception e) {
-            notificationEntityService.logEntityAction(tenantId, imageId, imageInfo, ActionType.UPDATED, user, e);
+            logEntityActionService.logEntityAction(tenantId, imageId, imageInfo, ActionType.UPDATED, user, e);
             throw e;
         }
     }
@@ -144,12 +167,43 @@ public class DefaultTbImageService extends AbstractTbEntityService implements Tb
         try {
             TbImageDeleteResult result = imageService.deleteImage(imageInfo, force);
             if (result.isSuccess()) {
-                notificationEntityService.logEntityAction(tenantId, imageId, imageInfo, ActionType.DELETED, user, imageId.toString());
+                logEntityActionService.logEntityAction(tenantId, imageId, imageInfo, ActionType.DELETED, user, imageId.toString());
+
+                List<ImageCacheKey> toEvict = new ArrayList<>();
+                toEvict.add(ImageCacheKey.forImage(tenantId, imageInfo.getResourceKey()));
+                if (imageInfo.isPublic()) {
+                    toEvict.add(ImageCacheKey.forPublicImage(imageInfo.getPublicResourceKey()));
+                }
+                evictFromCache(tenantId, toEvict);
             }
             return result;
         } catch (Exception e) {
-            notificationEntityService.logEntityAction(tenantId, imageId, ActionType.DELETED, user, e, imageId.toString());
+            logEntityActionService.logEntityAction(tenantId, imageId, ActionType.DELETED, user, e, imageId.toString());
             throw e;
         }
     }
+
+    @Override
+    public TbResourceInfo importImage(ResourceExportData imageData, boolean checkExisting, SecurityUser user) throws Exception {
+        TbResource image = imageService.toImage(user.getTenantId(), imageData, checkExisting);
+        if (checkExisting && image.getId() != null) {
+            accessControlService.checkPermission(user, Resource.TB_RESOURCE, Operation.READ, image.getId(), image);
+            return image;
+        } else {
+            accessControlService.checkPermission(user, Resource.TB_RESOURCE, Operation.CREATE, null, image);
+        }
+        return save(image, user);
+    }
+
+    private void evictFromCache(TenantId tenantId, List<ImageCacheKey> toEvict) {
+        toEvict.forEach(this::evictETags);
+        clusterService.broadcastToCore(TransportProtos.ToCoreNotificationMsg.newBuilder()
+                .setResourceCacheInvalidateMsg(TransportProtos.ResourceCacheInvalidateMsg.newBuilder()
+                        .setTenantIdMSB(tenantId.getId().getMostSignificantBits())
+                        .setTenantIdLSB(tenantId.getId().getLeastSignificantBits())
+                        .addAllKeys(toEvict.stream().map(ImageCacheKey::toProto).collect(Collectors.toList()))
+                        .build())
+                .build());
+    }
+
 }

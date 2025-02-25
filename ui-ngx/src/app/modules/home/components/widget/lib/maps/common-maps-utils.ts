@@ -1,5 +1,5 @@
 ///
-/// Copyright © 2016-2023 The Thingsboard Authors
+/// Copyright © 2016-2025 The Thingsboard Authors
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 /// limitations under the License.
 ///
 
-import { MapProviders } from '@home/components/widget/lib/maps/map-models';
 import {
   createLabelFromDatasource,
   hashCode,
@@ -30,6 +29,7 @@ import { map } from 'rxjs/operators';
 import { FormattedData } from '@shared/models/widget.models';
 import L from 'leaflet';
 import { ImagePipe } from '@shared/pipe/image.pipe';
+import { CompiledTbFunction, GenericFunction } from '@shared/models/js-function.models';
 
 export function getRatio(firsMoment: number, secondMoment: number, intermediateMoment: number): number {
   return (intermediateMoment - firsMoment) / (secondMoment - firsMoment);
@@ -58,7 +58,7 @@ export function findAngle(startPoint: FormattedData, endPoint: FormattedData, la
 }
 
 
-export function getDefCenterPosition(position): [number, number] {
+export function getDefCenterPosition(position: string | [number, number]): [number, number] {
   if (typeof (position) === 'string') {
     const parts = position.split(',');
     if (parts.length === 2) {
@@ -258,11 +258,11 @@ export const parseWithTranslation = {
   }
 };
 
-export function functionValueCalculator(useFunction: boolean, func: (...args: any[]) => any, params = [], defaultValue: any) {
-  let res;
-  if (useFunction && isDefined(func) && isFunction(func)) {
+export function functionValueCalculator<T>(useFunction: boolean, func: CompiledTbFunction<GenericFunction>, params = [], defaultValue: T): T {
+  let res: T;
+  if (useFunction && isDefinedAndNotNull(func)) {
     try {
-      res = func(...params);
+      res = func.execute(...params);
       if (!isDefinedAndNotNull(res) || res === '') {
         res = defaultValue;
       }

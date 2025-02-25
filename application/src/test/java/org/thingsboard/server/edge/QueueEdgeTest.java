@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@ public class QueueEdgeTest extends AbstractEdgeTest {
         AbstractMessage latestMessage = edgeImitator.getLatestMessage();
         Assert.assertTrue(latestMessage instanceof QueueUpdateMsg);
         QueueUpdateMsg queueUpdateMsg = (QueueUpdateMsg) latestMessage;
-        Queue queueMsg = JacksonUtil.fromStringIgnoreUnknownProperties(queueUpdateMsg.getEntity(), Queue.class);
+        Queue queueMsg = JacksonUtil.fromString(queueUpdateMsg.getEntity(), Queue.class, true);
         Assert.assertNotNull(queueMsg);
         Assert.assertEquals(UpdateMsgType.ENTITY_CREATED_RPC_MESSAGE, queueUpdateMsg.getMsgType());
         Assert.assertEquals(savedQueue, queueMsg);
@@ -89,7 +89,7 @@ public class QueueEdgeTest extends AbstractEdgeTest {
         latestMessage = edgeImitator.getLatestMessage();
         Assert.assertTrue(latestMessage instanceof QueueUpdateMsg);
         queueUpdateMsg = (QueueUpdateMsg) latestMessage;
-        queueMsg = JacksonUtil.fromStringIgnoreUnknownProperties(queueUpdateMsg.getEntity(), Queue.class);
+        queueMsg = JacksonUtil.fromString(queueUpdateMsg.getEntity(), Queue.class, true);
         Assert.assertNotNull(queueMsg);
         Assert.assertEquals(UpdateMsgType.ENTITY_UPDATED_RPC_MESSAGE, queueUpdateMsg.getMsgType());
         Assert.assertEquals(50, queueMsg.getPollInterval());

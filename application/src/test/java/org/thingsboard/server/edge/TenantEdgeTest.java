@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ public class TenantEdgeTest extends AbstractEdgeTest {
         // updated edge tenant
         savedTenant.setTitle("Updated Title for Tenant Edge Test");
         edgeImitator.expectMessageAmount(2); // expect tenant and tenant profile update msg
-        savedTenant = doPost("/api/tenant", savedTenant, Tenant.class);
+        savedTenant = saveTenant(savedTenant);
         Assert.assertTrue(edgeImitator.waitForMessages());
         Optional<TenantUpdateMsg> tenantUpdateMsgOpt = edgeImitator.findMessageByType(TenantUpdateMsg.class);
         Assert.assertTrue(tenantUpdateMsgOpt.isPresent());
@@ -48,10 +48,10 @@ public class TenantEdgeTest extends AbstractEdgeTest {
         Optional<TenantProfileUpdateMsg> tenantProfileUpdateMsgOpt = edgeImitator.findMessageByType(TenantProfileUpdateMsg.class);
         Assert.assertTrue(tenantProfileUpdateMsgOpt.isPresent());
         TenantProfileUpdateMsg tenantProfileUpdateMsg = tenantProfileUpdateMsgOpt.get();
-        Tenant tenantMsg = JacksonUtil.fromStringIgnoreUnknownProperties(tenantUpdateMsg.getEntity(), Tenant.class);
+        Tenant tenantMsg = JacksonUtil.fromString(tenantUpdateMsg.getEntity(), Tenant.class, true);
         Assert.assertNotNull(tenantMsg);
         Assert.assertEquals(savedTenant, tenantMsg);
-        TenantProfile tenantProfileMsg = JacksonUtil.fromStringIgnoreUnknownProperties(tenantProfileUpdateMsg.getEntity(), TenantProfile.class);
+        TenantProfile tenantProfileMsg = JacksonUtil.fromString(tenantProfileUpdateMsg.getEntity(), TenantProfile.class, true);
         Assert.assertNotNull(tenantProfileMsg);
         Assert.assertEquals(tenantMsg.getTenantProfileId(), tenantProfileMsg.getId());
         Assert.assertEquals(UpdateMsgType.ENTITY_UPDATED_RPC_MESSAGE, tenantUpdateMsg.getMsgType());
@@ -61,17 +61,17 @@ public class TenantEdgeTest extends AbstractEdgeTest {
         TenantProfile tenantProfile = createTenantProfile();
         savedTenant.setTenantProfileId(tenantProfile.getId());
         edgeImitator.expectMessageAmount(2); // expect tenant and tenant profile update msg
-        savedTenant = doPost("/api/tenant", savedTenant, Tenant.class);
+        savedTenant = saveTenant(savedTenant);
         Assert.assertTrue(edgeImitator.waitForMessages());
         tenantUpdateMsgOpt = edgeImitator.findMessageByType(TenantUpdateMsg.class);
         Assert.assertTrue(tenantUpdateMsgOpt.isPresent());
         tenantUpdateMsg = tenantUpdateMsgOpt.get();
-        tenantMsg = JacksonUtil.fromStringIgnoreUnknownProperties(tenantUpdateMsg.getEntity(), Tenant.class);
+        tenantMsg = JacksonUtil.fromString(tenantUpdateMsg.getEntity(), Tenant.class, true);
         Assert.assertNotNull(tenantMsg);
         tenantProfileUpdateMsgOpt = edgeImitator.findMessageByType(TenantProfileUpdateMsg.class);
         Assert.assertTrue(tenantProfileUpdateMsgOpt.isPresent());
         tenantProfileUpdateMsg = tenantProfileUpdateMsgOpt.get();
-        tenantProfileMsg = JacksonUtil.fromStringIgnoreUnknownProperties(tenantProfileUpdateMsg.getEntity(), TenantProfile.class);
+        tenantProfileMsg = JacksonUtil.fromString(tenantProfileUpdateMsg.getEntity(), TenantProfile.class, true);
         Assert.assertNotNull(tenantProfileMsg);
         // tenant update
         Assert.assertEquals(UpdateMsgType.ENTITY_UPDATED_RPC_MESSAGE, tenantUpdateMsg.getMsgType());

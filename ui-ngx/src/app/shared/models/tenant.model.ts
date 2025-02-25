@@ -1,5 +1,5 @@
 ///
-/// Copyright © 2016-2023 The Thingsboard Authors
+/// Copyright © 2016-2025 The Thingsboard Authors
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 import { ContactBased } from '@shared/models/contact-based.model';
 import { TenantId } from './id/tenant-id';
 import { TenantProfileId } from '@shared/models/id/tenant-profile-id';
-import { BaseData } from '@shared/models/base-data';
+import { BaseData, ExportableEntity } from '@shared/models/base-data';
 import { QueueInfo } from '@shared/models/queue.models';
 
 export enum TenantProfileType {
@@ -31,6 +31,7 @@ export interface DefaultTenantProfileConfiguration {
   maxUsers: number;
   maxDashboards: number;
   maxRuleChains: number;
+  maxEdges: number;
   maxResourcesInBytes: number;
   maxOtaPackagesInBytes: number;
   maxResourceSize: number;
@@ -41,6 +42,13 @@ export interface DefaultTenantProfileConfiguration {
   transportDeviceMsgRateLimit?: string;
   transportDeviceTelemetryMsgRateLimit?: string;
   transportDeviceTelemetryDataPointsRateLimit?: string;
+
+  transportGatewayMsgRateLimit?: string;
+  transportGatewayTelemetryMsgRateLimit?: string;
+  transportGatewayTelemetryDataPointsRateLimit?: string;
+  transportGatewayDeviceMsgRateLimit?: string;
+  transportGatewayDeviceTelemetryMsgRateLimit?: string;
+  transportGatewayDeviceTelemetryDataPointsRateLimit?: string;
 
   tenantEntityExportRateLimit?: string;
   tenantEntityImportRateLimit?: string;
@@ -59,6 +67,8 @@ export interface DefaultTenantProfileConfiguration {
   smsEnabled: boolean;
   maxCreatedAlarms: number;
 
+  maxDebugModeDurationMinutes: number;
+
   tenantServerRestLimitsConfiguration: string;
   customerServerRestLimitsConfiguration: string;
 
@@ -74,6 +84,11 @@ export interface DefaultTenantProfileConfiguration {
   wsUpdatesPerSessionRateLimit: string;
 
   cassandraQueryTenantRateLimitsConfiguration: string;
+
+  edgeEventRateLimits?: string;
+  edgeEventRateLimitsPerEdge?: string;
+  edgeUplinkMessagesRateLimits?: string;
+  edgeUplinkMessagesRateLimitsPerEdge?: string;
 
   defaultStorageTtlDays: number;
   alarmsTtlDays: number;
@@ -100,6 +115,7 @@ export function createTenantProfileConfiguration(type: TenantProfileType): Tenan
           maxUsers: 0,
           maxDashboards: 0,
           maxRuleChains: 0,
+          maxEdges: 0,
           maxResourcesInBytes: 0,
           maxOtaPackagesInBytes: 0,
           maxResourceSize: 0,
@@ -114,6 +130,7 @@ export function createTenantProfileConfiguration(type: TenantProfileType): Tenan
           maxSms: 0,
           smsEnabled: true,
           maxCreatedAlarms: 0,
+          maxDebugModeDurationMinutes: 0,
           tenantServerRestLimitsConfiguration: '',
           customerServerRestLimitsConfiguration: '',
           maxWsSessionsPerTenant: 0,
@@ -145,7 +162,7 @@ export interface TenantProfileData {
   queueConfiguration?: Array<QueueInfo>;
 }
 
-export interface TenantProfile extends BaseData<TenantProfileId> {
+export interface TenantProfile extends BaseData<TenantProfileId>, ExportableEntity<TenantProfileId> {
   name: string;
   description?: string;
   default?: boolean;

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@ package org.thingsboard.server.dao.resource;
 
 import org.thingsboard.server.common.data.Dashboard;
 import org.thingsboard.server.common.data.HasImage;
+import org.thingsboard.server.common.data.ResourceExportData;
+import org.thingsboard.server.common.data.ResourceSubType;
 import org.thingsboard.server.common.data.TbImageDeleteResult;
 import org.thingsboard.server.common.data.TbResource;
 import org.thingsboard.server.common.data.TbResourceInfo;
@@ -26,6 +28,8 @@ import org.thingsboard.server.common.data.page.PageData;
 import org.thingsboard.server.common.data.page.PageLink;
 import org.thingsboard.server.common.data.widget.WidgetTypeDetails;
 
+import java.util.Collection;
+
 public interface ImageService {
 
     TbResourceInfo saveImage(TbResource image);
@@ -34,25 +38,44 @@ public interface ImageService {
 
     TbResourceInfo getImageInfoByTenantIdAndKey(TenantId tenantId, String key);
 
-    PageData<TbResourceInfo> getImagesByTenantId(TenantId tenantId, PageLink pageLink);
+    TbResourceInfo getPublicImageInfoByKey(String publicResourceKey);
 
-    PageData<TbResourceInfo> getAllImagesByTenantId(TenantId tenantId, PageLink pageLink);
+    PageData<TbResourceInfo> getImagesByTenantId(TenantId tenantId, ResourceSubType imageSubType, PageLink pageLink);
+
+    PageData<TbResourceInfo> getAllImagesByTenantId(TenantId tenantId, ResourceSubType imageSubType, PageLink pageLink);
 
     byte[] getImageData(TenantId tenantId, TbResourceId imageId);
 
     byte[] getImagePreview(TenantId tenantId, TbResourceId imageId);
 
+    ResourceExportData exportImage(TbResourceInfo imageInfo);
+
+    TbResource toImage(TenantId tenantId, ResourceExportData imageData, boolean checkExisting);
+
     TbImageDeleteResult deleteImage(TbResourceInfo imageInfo, boolean force);
+
+    String calculateImageEtag(byte[] imageData);
 
     TbResourceInfo findSystemOrTenantImageByEtag(TenantId tenantId, String etag);
 
     boolean replaceBase64WithImageUrl(HasImage entity, String type);
-    boolean replaceBase64WithImageUrl(Dashboard dashboard);
-    boolean replaceBase64WithImageUrl(WidgetTypeDetails widgetType);
 
-    void inlineImage(HasImage entity);
+    boolean updateImagesUsage(Dashboard dashboard);
 
-    void inlineImages(Dashboard dashboard);
+    boolean updateImagesUsage(WidgetTypeDetails widgetType);
 
-    void inlineImages(WidgetTypeDetails widgetTypeDetails);
+    <T extends HasImage> T inlineImage(T entity);
+
+    Collection<TbResourceInfo> getUsedImages(Dashboard dashboard);
+
+    Collection<TbResourceInfo> getUsedImages(WidgetTypeDetails widgetTypeDetails);
+
+    void inlineImageForEdge(HasImage entity);
+
+    void inlineImagesForEdge(Dashboard dashboard);
+
+    void inlineImagesForEdge(WidgetTypeDetails widgetTypeDetails);
+
+    TbResourceInfo createOrUpdateSystemImage(String resourceKey, byte[] data);
+
 }

@@ -1,5 +1,5 @@
 ///
-/// Copyright © 2016-2023 The Thingsboard Authors
+/// Copyright © 2016-2025 The Thingsboard Authors
 ///
 /// Licensed under the Apache License, Version 2.0 (the "License");
 /// you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@
 import { Inject, Injectable } from '@angular/core';
 import { DashboardService } from '@core/http/dashboard.service';
 import { TranslateService } from '@ngx-translate/core';
-import { Store } from '@ngrx/store';
+import { select, Store } from '@ngrx/store';
 import { AppState } from '@core/core.state';
 import { ActionNotificationShow } from '@core/notification/notification.actions';
-import { Dashboard, DashboardLayoutId } from '@shared/models/dashboard.models';
+import { BreakpointId, Dashboard, DashboardLayoutId } from '@shared/models/dashboard.models';
 import { deepClone, guid, isDefined, isNotEmptyStr, isObject, isString, isUndefined } from '@core/utils';
 import { WINDOW } from '@core/services/window.service';
 import { DOCUMENT } from '@angular/common';
@@ -35,10 +35,10 @@ import {
 import { MatDialog } from '@angular/material/dialog';
 import { ImportDialogComponent, ImportDialogData } from '@shared/import-export/import-dialog.component';
 import { forkJoin, Observable, of, Subject } from 'rxjs';
-import { catchError, map, mergeMap, switchMap, tap } from 'rxjs/operators';
+import { catchError, map, mergeMap, switchMap, take, tap } from 'rxjs/operators';
 import { DashboardUtilsService } from '@core/services/dashboard-utils.service';
 import { EntityService } from '@core/http/entity.service';
-import { Widget, WidgetSize, WidgetType, WidgetTypeDetails } from '@shared/models/widget.models';
+import { Widget, WidgetSize, WidgetTypeDetails } from '@shared/models/widget.models';
 import { ItemBufferService, WidgetItem } from '@core/services/item-buffer.service';
 import {
   BulkImportRequest,
@@ -55,7 +55,12 @@ import { EntityType } from '@shared/models/entity-type.models';
 import { UtilsService } from '@core/services/utils.service';
 import { WidgetService } from '@core/http/widget.service';
 import { WidgetsBundle } from '@shared/models/widgets-bundle.model';
-import { ImportEntitiesResultInfo, ImportEntityData } from '@shared/models/entity.models';
+import {
+  EntityInfoData,
+  ImportEntitiesResultInfo,
+  ImportEntityData,
+  VersionedEntity
+} from '@shared/models/entity.models';
 import { RequestConfig } from '@core/http/http-utils';
 import { RuleChain, RuleChainImport, RuleChainMetaData, RuleChainType } from '@shared/models/rule-chain.models';
 import { RuleChainService } from '@core/http/rule-chain.service';
@@ -70,16 +75,24 @@ import { EdgeService } from '@core/http/edge.service';
 import { RuleNode } from '@shared/models/rule-node.models';
 import { AssetProfileService } from '@core/http/asset-profile.service';
 import { AssetProfile } from '@shared/models/asset.models';
-import {
-  ExportWidgetsBundleDialogComponent,
-  ExportWidgetsBundleDialogData,
-  ExportWidgetsBundleDialogResult
-} from '@shared/import-export/export-widgets-bundle-dialog.component';
 import { ImageService } from '@core/http/image.service';
 import { ImageExportData, ImageResourceInfo, ImageResourceType } from '@shared/models/resource.models';
+import { selectUserSettingsProperty } from '@core/auth/auth.selectors';
+import { ActionPreferencesPutUserSettings } from '@core/auth/auth.actions';
+import { ExportableEntity } from '@shared/models/base-data';
+import { EntityId } from '@shared/models/id/entity-id';
+import { Customer } from '@shared/models/customer.model';
+import {
+  ExportResourceDialogComponent,
+  ExportResourceDialogData,
+  ExportResourceDialogDialogResult
+} from '@shared/import-export/export-resource-dialog.component';
+import { FormProperty, propertyValid } from '@shared/models/dynamic-form.models';
 
 export type editMissingAliasesFunction = (widgets: Array<Widget>, isSingleWidget: boolean,
                                           customTitle: string, missingEntityAliases: EntityAliases) => Observable<EntityAliases>;
+
+type SupportEntityResources = 'includeResourcesInExportWidgetTypes' | 'includeResourcesInExportDashboard' | 'includeBundleWidgetsInExport';
 
 // @dynamic
 @Injectable()
@@ -105,6 +118,27 @@ export class ImportExportService {
               private itembuffer: ItemBufferService,
               private dialog: MatDialog) {
 
+  }
+
+  public exportFormProperties(properties: FormProperty[], fileName: string) {
+    this.exportToPc(properties, fileName);
+  }
+
+  public importFormProperties(): Observable<FormProperty[]> {
+    return this.openImportDialog('dynamic-form.import-form',
+      'dynamic-form.json-file', true, 'dynamic-form.json-content').pipe(
+      map((properties: FormProperty[]) => {
+        if (!this.validateImportedFormProperties(properties)) {
+          this.store.dispatch(new ActionNotificationShow(
+            {message: this.translate.instant('dynamic-form.invalid-form-json-file-error'),
+              type: 'error'}));
+          throw new Error('Invalid form JSON file');
+        } else {
+          return properties;
+        }
+      }),
+      catchError(() => of(null))
+    );
   }
 
   public exportImage(type: ImageResourceType, key: string) {
@@ -138,16 +172,23 @@ export class ImportExportService {
   }
 
   public exportDashboard(dashboardId: string) {
-    this.dashboardService.exportDashboard(dashboardId).subscribe(
-      (dashboard) => {
-        let name = dashboard.title;
-        name = name.toLowerCase().replace(/\W/g, '_');
-        this.exportToPc(this.prepareDashboardExport(dashboard), name);
-      },
-      (e) => {
-        this.handleExportError(e, 'dashboard.export-failed-error');
-      }
-    );
+    this.getIncludeResourcesPreference('includeResourcesInExportDashboard').subscribe(includeResources => {
+      this.openExportDialog('dashboard.export', 'dashboard.export-prompt', includeResources).subscribe(result => {
+        if (result) {
+          this.updateUserSettingsIncludeResourcesIfNeeded(includeResources, result.include, 'includeResourcesInExportDashboard');
+          this.dashboardService.exportDashboard(dashboardId, result.include).subscribe({
+            next: (dashboard) => {
+              let name = dashboard.title;
+              name = name.toLowerCase().replace(/\W/g, '_');
+              this.exportToPc(this.prepareDashboardExport(dashboard), name);
+            },
+            error: (e) => {
+              this.handleExportError(e, 'dashboard.export-failed-error');
+            }
+          });
+        }
+      })
+    })
   }
 
   public importDashboard(onEditMissingAliases: editMissingAliasesFunction): Observable<Dashboard> {
@@ -159,6 +200,7 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid dashboard file');
         } else {
+          dashboard = this.prepareImport(dashboard);
           dashboard = this.dashboardUtils.validateAndUpdateDashboard(dashboard);
           let aliasIds = null;
           const entityAliases = dashboard.configuration.entityAliases;
@@ -189,17 +231,17 @@ export class ImportExportService {
           }
         }
       }),
-      catchError((err) => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
-  public exportWidget(dashboard: Dashboard, sourceState: string, sourceLayout: DashboardLayoutId, widget: Widget) {
-    const widgetItem = this.itembuffer.prepareWidgetItem(dashboard, sourceState, sourceLayout, widget);
-    let name = widgetItem.widget.config.title;
-    name = name.toLowerCase().replace(/\W/g, '_');
-    this.exportToPc(this.prepareExport(widgetItem), name);
+  public exportWidget(dashboard: Dashboard, sourceState: string, sourceLayout: DashboardLayoutId, widget: Widget,
+                      widgetTitle: string, breakpoint: BreakpointId) {
+    const widgetItem = this.itembuffer.prepareWidgetItem(dashboard, sourceState, sourceLayout, widget, breakpoint);
+    const widgetDefaultName = this.widgetService.getWidgetInfoFromCache(widget.typeFullFqn).widgetName;
+    let fileName = widgetDefaultName + (isNotEmptyStr(widgetTitle) ? `_${widgetTitle}` : '');
+    fileName = fileName.toLowerCase().replace(/\W/g, '_');
+    this.exportToPc(this.prepareExport(widgetItem), fileName);
   }
 
   public importWidget(dashboard: Dashboard, targetState: string,
@@ -215,7 +257,7 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid widget file');
         } else {
-          let widget = widgetItem.widget;
+          let widget = this.prepareImport(widgetItem.widget);
           widget = this.dashboardUtils.validateAndUpdateWidget(widget);
           widget.id = guid();
           const aliasesInfo = this.prepareAliasesInfo(widgetItem.aliasesInfo);
@@ -226,11 +268,10 @@ export class ImportExportService {
           const originalSize = widgetItem.originalSize;
 
           const datasourceAliases = aliasesInfo.datasourceAliases;
-          const targetDeviceAliases = aliasesInfo.targetDeviceAliases;
-          if (datasourceAliases || targetDeviceAliases) {
+          if (datasourceAliases || aliasesInfo.targetDeviceAlias) {
             const entityAliases: EntityAliases = {};
             const datasourceAliasesMap: {[aliasId: string]: number} = {};
-            const targetDeviceAliasesMap: {[aliasId: string]: number} = {};
+            let targetDeviceAliasId: string;
             let aliasId: string;
             let datasourceIndex: number;
             if (datasourceAliases) {
@@ -241,13 +282,10 @@ export class ImportExportService {
                 entityAliases[aliasId] = {id: aliasId, ...datasourceAliases[datasourceIndex]};
               }
             }
-            if (targetDeviceAliases) {
-              for (const strIndex of Object.keys(targetDeviceAliases)) {
-                datasourceIndex = Number(strIndex);
-                aliasId = this.utils.guid();
-                targetDeviceAliasesMap[aliasId] = datasourceIndex;
-                entityAliases[aliasId] = {id: aliasId, ...targetDeviceAliases[datasourceIndex]};
-              }
+            if (aliasesInfo.targetDeviceAlias) {
+              aliasId = this.utils.guid();
+              targetDeviceAliasId = aliasId;
+              entityAliases[aliasId] = {id: aliasId, ...aliasesInfo.targetDeviceAlias};
             }
             const aliasIds = Object.keys(entityAliases);
             if (aliasIds.length > 0) {
@@ -260,13 +298,12 @@ export class ImportExportService {
                         mergeMap((updatedEntityAliases) => {
                           for (const id of Object.keys(updatedEntityAliases)) {
                             const entityAlias = updatedEntityAliases[id];
-                            let index;
+                            let index: number;
                             if (isDefined(datasourceAliasesMap[id])) {
                               index = datasourceAliasesMap[id];
                               datasourceAliases[index] = entityAlias;
-                            } else if (isDefined(targetDeviceAliasesMap[id])) {
-                              index = targetDeviceAliasesMap[id];
-                              targetDeviceAliases[index] = entityAlias;
+                            } else if (targetDeviceAliasId === id) {
+                              aliasesInfo.targetDeviceAlias = entityAlias;
                             }
                           }
                           return this.addImportedWidget(dashboard, targetState, targetLayoutFunction, widget,
@@ -290,43 +327,59 @@ export class ImportExportService {
           }
         }
       }),
-      catchError((err) => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
   public exportWidgetType(widgetTypeId: string) {
-    this.widgetService.exportWidgetType(widgetTypeId).subscribe(
-      (widgetTypeDetails) => {
-        let name = widgetTypeDetails.name;
-        name = name.toLowerCase().replace(/\W/g, '_');
-        this.exportToPc(this.prepareExport(widgetTypeDetails), name);
-      },
-      (e) => {
-        this.handleExportError(e, 'widget-type.export-failed-error');
-      }
-    );
+    this.getIncludeResourcesPreference('includeResourcesInExportWidgetTypes').subscribe(includeResources => {
+      this.openExportDialog('widget.export', 'widget.export-prompt', includeResources).subscribe(result => {
+        if (result) {
+          this.updateUserSettingsIncludeResourcesIfNeeded(includeResources, result.include, 'includeResourcesInExportWidgetTypes');
+          this.widgetService.exportWidgetType(widgetTypeId, result.include).subscribe({
+            next: (widgetTypeDetails) => {
+              let name = widgetTypeDetails.name;
+              name = name.toLowerCase().replace(/\W/g, '_');
+              this.exportToPc(this.prepareExport(widgetTypeDetails), name);
+            },
+            error: (e) => {
+              this.handleExportError(e, 'widget-type.export-failed-error');
+            }
+          });
+        }
+      })
+    });
   }
 
   public exportWidgetTypes(widgetTypeIds: string[]): Observable<void> {
-    const widgetTypesObservables: Array<Observable<WidgetTypeDetails>> = [];
-    for (const id of widgetTypeIds) {
-      widgetTypesObservables.push(this.widgetService.exportWidgetType(id));
-    }
-    return forkJoin(widgetTypesObservables).pipe(
-      map((widgetTypes) =>
-        Object.fromEntries(widgetTypes.map(wt=> {
-          let name = wt.name;
-          name = name.toLowerCase().replace(/\W/g, '_') + `.${JSON_TYPE.extension}`;
-          const data = JSON.stringify(this.prepareExport(wt), null, 2);
-          return [name, data];
-        }))),
-        mergeMap(widgetTypeFiles => this.exportJSZip(widgetTypeFiles, 'widget_types')),
-        catchError(e => {
-            this.handleExportError(e, 'widget-type.export-failed-error');
-            throw e;
-        })
+    return this.getIncludeResourcesPreference('includeResourcesInExportWidgetTypes').pipe(
+      mergeMap(includeResources =>
+        this.openExportDialog('widget.export-widgets', 'widget.export-widgets-prompt', includeResources).pipe(
+          mergeMap(result => {
+            if (result) {
+              this.updateUserSettingsIncludeResourcesIfNeeded(includeResources, result.include, 'includeResourcesInExportWidgetTypes');
+              const widgetTypesObservables: Array<Observable<WidgetTypeDetails>> = [];
+              for (const id of widgetTypeIds) {
+                widgetTypesObservables.push(this.widgetService.exportWidgetType(id, result.include));
+              }
+              return forkJoin(widgetTypesObservables).pipe(
+                map((widgetTypes) =>
+                  Object.fromEntries(widgetTypes.map(wt => {
+                    let name = wt.name;
+                    name = name.toLowerCase().replace(/\W/g, '_') + `.${JSON_TYPE.extension}`;
+                    const data = JSON.stringify(this.prepareExport(wt), null, 2);
+                    return [name, data];
+                  }))),
+                mergeMap(widgetTypeFiles => this.exportJSZip(widgetTypeFiles, 'widget_types')),
+                catchError(e => {
+                  this.handleExportError(e, 'widget-type.export-failed-error');
+                  throw e;
+                })
+              );
+            }
+          })
+        )
+      )
     );
   }
 
@@ -339,7 +392,7 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid widget file');
         } else {
-          return this.widgetService.saveImportedWidgetTypeDetails(widgetTypeDetails);
+          return this.widgetService.saveImportedWidgetTypeDetails(this.prepareImport(widgetTypeDetails));
         }
       }),
       catchError(() => of(null))
@@ -347,36 +400,88 @@ export class ImportExportService {
   }
 
   public exportWidgetsBundle(widgetsBundleId: string) {
-    this.widgetService.exportWidgetsBundle(widgetsBundleId).subscribe(
-      (widgetsBundle) => {
-        this.dialog.open<ExportWidgetsBundleDialogComponent, ExportWidgetsBundleDialogData,
-          ExportWidgetsBundleDialogResult>(ExportWidgetsBundleDialogComponent, {
-          disableClose: true,
-          panelClass: ['tb-dialog', 'tb-fullscreen-dialog'],
-          data: {
-            widgetsBundle
-          }
-        }).afterClosed().subscribe(
-          (result) => {
-            if (result) {
-              if (result.exportWidgets) {
-                this.exportWidgetsBundleWithWidgetTypes(widgetsBundle);
-              } else {
-                this.exportWidgetsBundleWithWidgetTypeFqns(widgetsBundle);
-              }
-            }
-          }
-        );
+    const tasks = {
+      includeBundleWidgetsInExport: this.store.pipe(select(selectUserSettingsProperty( 'includeBundleWidgetsInExport'))).pipe(take(1)),
+      widgetsBundle: this.widgetService.exportWidgetsBundle(widgetsBundleId)
+    };
+
+    forkJoin(tasks).subscribe({
+      next: ({includeBundleWidgetsInExport, widgetsBundle}) => {
+        this.handleExportWidgetsBundle(widgetsBundle, includeBundleWidgetsInExport);
       },
-      (e) => {
+      error: (e) => {
         this.handleExportError(e, 'widgets-bundle.export-failed-error');
+      }
+    });
+  }
+
+  public exportEntity(entityData: VersionedEntity): void {
+    const id = (entityData as EntityInfoData).id ?? (entityData as RuleChainMetaData).ruleChainId;
+    let fileName = (entityData as EntityInfoData).name;
+    let preparedData;
+    switch (id.entityType) {
+      case EntityType.DEVICE_PROFILE:
+      case EntityType.ASSET_PROFILE:
+        preparedData = this.prepareProfileExport(entityData as DeviceProfile | AssetProfile);
+        break;
+      case EntityType.RULE_CHAIN:
+        forkJoin([this.ruleChainService.getRuleChainMetadata(id.id), this.ruleChainService.getRuleChain(id.id)])
+          .pipe(
+            take(1),
+            map(([ruleChainMetaData, ruleChain]) => {
+              const ruleChainExport: RuleChainImport = {
+                ruleChain: this.prepareRuleChain(ruleChain),
+                metadata: this.prepareRuleChainMetaData(ruleChainMetaData)
+              };
+              return ruleChainExport;
+            }))
+          .subscribe(this.onRuleChainExported());
+        return;
+      case EntityType.WIDGETS_BUNDLE:
+        this.exportSelectedWidgetsBundle(entityData as WidgetsBundle);
+        return;
+      case EntityType.DASHBOARD:
+        preparedData = this.prepareDashboardExport(entityData as Dashboard);
+        break;
+      case EntityType.CUSTOMER:
+        fileName = (entityData as Customer).title;
+        preparedData = this.prepareExport(entityData);
+        break;
+      default:
+        preparedData = this.prepareExport(entityData);
+    }
+    this.exportToPc(preparedData, fileName);
+  }
+
+  private exportSelectedWidgetsBundle(widgetsBundle: WidgetsBundle): void {
+    this.store.pipe(select(selectUserSettingsProperty( 'includeBundleWidgetsInExport'))).pipe(take(1)).subscribe({
+      next: (includeBundleWidgetsInExport) => {
+        this.handleExportWidgetsBundle(widgetsBundle, includeBundleWidgetsInExport, true);
+      },
+      error: (e) => {
+        this.handleExportError(e, 'widgets-bundle.export-failed-error');
+      }
+    });
+  }
+
+  private handleExportWidgetsBundle(widgetsBundle: WidgetsBundle, includeBundleWidgetsInExport: boolean, ignoreLoading?: boolean): void {
+    this.openExportDialog('widgets-bundle.export', 'widgets-bundle.export-widgets-bundle-widgets-prompt',
+      includeBundleWidgetsInExport, ignoreLoading).subscribe((result) => {
+        if (result) {
+          this.updateUserSettingsIncludeResourcesIfNeeded(includeBundleWidgetsInExport, result.include, 'includeBundleWidgetsInExport');
+          if (result.include) {
+            this.exportWidgetsBundleWithWidgetTypes(widgetsBundle);
+          } else {
+            this.exportWidgetsBundleWithWidgetTypeFqns(widgetsBundle);
+          }
+        }
       }
     );
   }
 
   private exportWidgetsBundleWithWidgetTypes(widgetsBundle: WidgetsBundle) {
-    this.widgetService.exportBundleWidgetTypesDetails(widgetsBundle.id.id).subscribe(
-      (widgetTypesDetails) => {
+    this.widgetService.exportBundleWidgetTypesDetails(widgetsBundle.id.id).subscribe({
+      next: (widgetTypesDetails) => {
         const widgetsBundleItem: WidgetsBundleItem = {
           widgetsBundle: this.prepareExport(widgetsBundle),
           widgetTypes: []
@@ -388,15 +493,15 @@ export class ImportExportService {
         name = name.toLowerCase().replace(/\W/g, '_');
         this.exportToPc(widgetsBundleItem, name);
       },
-      (e) => {
+      error: (e) => {
         this.handleExportError(e, 'widgets-bundle.export-failed-error');
       }
-    );
+    });
   }
 
   private exportWidgetsBundleWithWidgetTypeFqns(widgetsBundle: WidgetsBundle) {
-    this.widgetService.getBundleWidgetTypeFqns(widgetsBundle.id.id).subscribe(
-      (widgetTypeFqns) => {
+    this.widgetService.getBundleWidgetTypeFqns(widgetsBundle.id.id).subscribe({
+      next: (widgetTypeFqns) => {
         const widgetsBundleItem: WidgetsBundleItem = {
           widgetsBundle: this.prepareExport(widgetsBundle),
           widgetTypeFqns
@@ -405,10 +510,10 @@ export class ImportExportService {
         name = name.toLowerCase().replace(/\W/g, '_');
         this.exportToPc(widgetsBundleItem, name);
       },
-      (e) => {
+      error: (e) => {
         this.handleExportError(e, 'widgets-bundle.export-failed-error');
       }
-    );
+    });
   }
 
   public importWidgetsBundle(): Observable<WidgetsBundle> {
@@ -420,7 +525,7 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid widgets bundle file');
         } else {
-          const widgetsBundle = widgetsBundleItem.widgetsBundle;
+          const widgetsBundle = this.prepareImport(widgetsBundleItem.widgetsBundle);
           return this.widgetService.saveWidgetsBundle(widgetsBundle).pipe(
             mergeMap((savedWidgetsBundle) => {
               if (widgetsBundleItem.widgetTypes?.length || widgetsBundleItem.widgetTypeFqns?.length) {
@@ -445,7 +550,7 @@ export class ImportExportService {
                     }
                     if (widgetTypeFqns.length) {
                       return this.widgetService.updateWidgetsBundleWidgetFqns(savedWidgetsBundle.id.id, widgetTypeFqns).pipe(
-                        map((res) => savedWidgetsBundle)
+                        map(() => savedWidgetsBundle)
                       );
                     } else {
                       return of(savedWidgetsBundle);
@@ -459,9 +564,7 @@ export class ImportExportService {
           ));
         }
       }),
-      catchError((err) => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
@@ -493,10 +596,9 @@ export class ImportExportService {
     let statisticalInfo: ImportEntitiesResultInfo = {};
     const importEntitiesObservables: Observable<ImportEntitiesResultInfo>[] = [];
     for (let i = 0; i < partSize; i++) {
-      let saveEntityPromise: Observable<ImportEntitiesResultInfo>;
-      saveEntityPromise = this.entityService.saveEntityParameters(entityType, entitiesData[i], updateData, config);
+      const saveEntityPromise = this.entityService.saveEntityParameters(entityType, entitiesData[i], updateData, config);
       const importEntityPromise = saveEntityPromise.pipe(
-          tap((res) => {
+          tap(() => {
             if (importEntityCompleted) {
               importEntityCompleted();
             }
@@ -512,9 +614,7 @@ export class ImportExportService {
         entitiesData.splice(0, partSize);
         if (entitiesData.length) {
           return this.importEntities(entitiesData, entityType, updateData, importEntityCompleted, config).pipe(
-            map((response) => {
-              return this.sumObject(statisticalInfo, response) as ImportEntitiesResultInfo;
-            })
+            map((response) => this.sumObject(statisticalInfo, response))
           );
         } else {
           return of(statisticalInfo);
@@ -525,26 +625,29 @@ export class ImportExportService {
 
   public exportRuleChain(ruleChainId: string) {
     this.ruleChainService.getRuleChain(ruleChainId).pipe(
-      mergeMap(ruleChain => {
-        return this.ruleChainService.getRuleChainMetadata(ruleChainId).pipe(
-          map((ruleChainMetaData) => {
-            const ruleChainExport: RuleChainImport = {
-              ruleChain: this.prepareRuleChain(ruleChain),
-              metadata: this.prepareRuleChainMetaData(ruleChainMetaData)
-            };
-            return ruleChainExport;
-          })
-        );
-      })
-    ).subscribe((ruleChainExport) => {
+      mergeMap(ruleChain => this.ruleChainService.getRuleChainMetadata(ruleChainId).pipe(
+        map((ruleChainMetaData) => {
+          const ruleChainExport: RuleChainImport = {
+            ruleChain: this.prepareRuleChain(ruleChain),
+            metadata: this.prepareRuleChainMetaData(ruleChainMetaData)
+          };
+          return ruleChainExport;
+        })
+      ))
+    ).subscribe(this.onRuleChainExported());
+  }
+
+  private onRuleChainExported() {
+    return {
+      next: (ruleChainExport: RuleChainImport) => {
         let name = ruleChainExport.ruleChain.name;
         name = name.toLowerCase().replace(/\W/g, '_');
         this.exportToPc(ruleChainExport, name);
-    },
-      (e) => {
+      },
+      error: (e) => {
         this.handleExportError(e, 'rulechain.export-failed-error');
       }
-    );
+    };
   }
 
   public importRuleChain(expectedRuleChainType: RuleChainType): Observable<RuleChainImport> {
@@ -564,21 +667,24 @@ export class ImportExportService {
           return this.processOldRuleChainConnections(ruleChainImport);
         }
       }),
-      catchError((err) => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
-  private processOldRuleChainConnections(ruleChainImport: RuleChainImport): Observable<RuleChainImport> {
-    const metadata = ruleChainImport.metadata;
+  private processOldRuleChainConnections({ruleChain, metadata}: RuleChainImport): Observable<RuleChainImport> {
+    ruleChain = this.prepareImport(ruleChain);
+    metadata = {
+      ...metadata,
+      nodes: metadata.nodes.map(({ debugMode, ...node }: RuleNode & { debugMode: boolean }) => {
+        return debugMode ? { ...node, debugSettings: { failuresEnabled: true, allEnabled: true} } : node
+      })
+    };
     if ((metadata as any).ruleChainConnections) {
       const ruleChainNameResolveObservables: Observable<void>[] = [];
       for (const ruleChainConnection of (metadata as any).ruleChainConnections) {
         if (ruleChainConnection.targetRuleChainId && ruleChainConnection.targetRuleChainId.id) {
           const ruleChainNode: RuleNode = {
             name: '',
-            debugMode: false,
             singletonMode: false,
             type: 'org.thingsboard.rule.engine.flow.TbRuleChainInputNode',
             configuration: {
@@ -588,9 +694,7 @@ export class ImportExportService {
           };
           ruleChainNameResolveObservables.push(this.ruleChainService.getRuleChain(ruleChainNode.configuration.ruleChainId,
             {ignoreErrors: true, ignoreLoading: true}).pipe(
-              catchError(err => {
-                return of({name: 'Rule Chain Input'} as RuleChain);
-              }),
+              catchError(() => of({name: 'Rule Chain Input'} as RuleChain)),
               map((ruleChain => {
                 ruleChainNode.name = ruleChain.name;
                 return null;
@@ -608,27 +712,27 @@ export class ImportExportService {
       }
       if (ruleChainNameResolveObservables.length) {
         return forkJoin(ruleChainNameResolveObservables).pipe(
-           map(() => ruleChainImport)
+           map(() => ({ruleChain, metadata}))
         );
       } else {
-        return of(ruleChainImport);
+        return of({ruleChain, metadata});
       }
     } else {
-      return of(ruleChainImport);
+      return of({ruleChain, metadata});
     }
   }
 
   public exportDeviceProfile(deviceProfileId: string) {
-    this.deviceProfileService.exportDeviceProfile(deviceProfileId).subscribe(
-      (deviceProfile) => {
-          let name = deviceProfile.name;
-          name = name.toLowerCase().replace(/\W/g, '_');
-          this.exportToPc(this.prepareProfileExport(deviceProfile), name);
-        },
-        (e) => {
-          this.handleExportError(e, 'device-profile.export-failed-error');
-        }
-      );
+    this.deviceProfileService.exportDeviceProfile(deviceProfileId).subscribe({
+      next: (deviceProfile) => {
+        let name = deviceProfile.name;
+        name = name.toLowerCase().replace(/\W/g, '_');
+        this.exportToPc(this.prepareProfileExport(deviceProfile), name);
+      },
+      error: (e) => {
+        this.handleExportError(e, 'device-profile.export-failed-error');
+      }
+    });
   }
 
   public importDeviceProfile(): Observable<DeviceProfile> {
@@ -640,26 +744,24 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid device profile file');
         } else {
-            return this.deviceProfileService.saveDeviceProfile(deviceProfile);
+            return this.deviceProfileService.saveDeviceProfile(this.prepareImport(deviceProfile));
         }
       }),
-      catchError((err) => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
   public exportAssetProfile(assetProfileId: string) {
-    this.assetProfileService.exportAssetProfile(assetProfileId).subscribe(
-      (assetProfile) => {
+    this.assetProfileService.exportAssetProfile(assetProfileId).subscribe({
+      next: (assetProfile) => {
         let name = assetProfile.name;
         name = name.toLowerCase().replace(/\W/g, '_');
         this.exportToPc(this.prepareProfileExport(assetProfile), name);
       },
-      (e) => {
+      error: (e) => {
         this.handleExportError(e, 'asset-profile.export-failed-error');
       }
-    );
+    });
   }
 
   public importAssetProfile(): Observable<AssetProfile> {
@@ -671,26 +773,24 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid asset profile file');
         } else {
-          return this.assetProfileService.saveAssetProfile(assetProfile);
+          return this.assetProfileService.saveAssetProfile(this.prepareImport(assetProfile));
         }
       }),
-      catchError((err) => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
   public exportTenantProfile(tenantProfileId: string) {
-    this.tenantProfileService.getTenantProfile(tenantProfileId).subscribe(
-      (tenantProfile) => {
+    this.tenantProfileService.getTenantProfile(tenantProfileId).subscribe({
+      next: (tenantProfile) => {
         let name = tenantProfile.name;
         name = name.toLowerCase().replace(/\W/g, '_');
         this.exportToPc(this.prepareProfileExport(tenantProfile), name);
       },
-      (e) => {
+      error: (e) => {
         this.handleExportError(e, 'tenant-profile.export-failed-error');
       }
-    );
+    });
   }
 
   public importTenantProfile(): Observable<TenantProfile> {
@@ -702,19 +802,17 @@ export class ImportExportService {
               type: 'error'}));
           throw new Error('Invalid tenant profile file');
         } else {
-          return this.tenantProfileService.saveTenantProfile(tenantProfile);
+          return this.tenantProfileService.saveTenantProfile(this.prepareImport(tenantProfile));
         }
       }),
-      catchError(() => {
-        return of(null);
-      })
+      catchError(() => of(null))
     );
   }
 
   private processCSVCell(cellData: any): any {
     if (isString(cellData)) {
       let result = cellData.replace(/"/g, '""');
-      if (result.search(/([",\n])/g) >= 0) {
+      if (result.search(/([",;\n])/g) >= 0) {
         result = `"${result}"`;
       }
       return result;
@@ -827,7 +925,7 @@ export class ImportExportService {
       && isDefined(tenantProfile.isolatedTbRuleEngine);
   }
 
-  private sumObject(obj1: any, obj2: any): any {
+  private sumObject<T>(obj1: T, obj2: T): T {
     Object.keys(obj2).map((key) => {
       if (isObject(obj2[key])) {
         obj1[key] = obj1[key] || {};
@@ -849,6 +947,14 @@ export class ImportExportService {
     this.store.dispatch(new ActionNotificationShow(
       {message: this.translate.instant(errorDetailsMessageId, {error: message}),
         type: 'error'}));
+  }
+
+  private validateImportedFormProperties(properties: FormProperty[]): boolean {
+    if (!properties.length) {
+      return false;
+    } else {
+      return !properties.some(p => !propertyValid(p));
+    }
   }
 
   private validateImportedImage(image: ImageExportData): boolean {
@@ -929,13 +1035,11 @@ export class ImportExportService {
                             onFiltersUpdateFunction: () => void,
                             originalColumns: number, originalSize: WidgetSize): Observable<ImportWidgetResult> {
     return targetLayoutFunction().pipe(
-      mergeMap((targetLayout) => {
-        return this.itembuffer.addWidgetToDashboard(dashboard, targetState, targetLayout,
+      mergeMap((targetLayout) => this.itembuffer.addWidgetToDashboard(dashboard, targetState, targetLayout,
           widget, aliasesInfo, filtersInfo, onAliasesUpdateFunction, onFiltersUpdateFunction,
           originalColumns, originalSize, -1, -1).pipe(
           map(() => ({widget, layoutId: targetLayout} as ImportWidgetResult))
-        );
-      }
+        )
     ));
   }
 
@@ -972,19 +1076,15 @@ export class ImportExportService {
 
   private prepareAliasesInfo(aliasesInfo: AliasesInfo): AliasesInfo {
     const datasourceAliases = aliasesInfo.datasourceAliases;
-    const targetDeviceAliases = aliasesInfo.targetDeviceAliases;
-    if (datasourceAliases || targetDeviceAliases) {
+    if (datasourceAliases || aliasesInfo.targetDeviceAlias) {
       if (datasourceAliases) {
         for (const strIndex of Object.keys(datasourceAliases)) {
           const datasourceIndex = Number(strIndex);
           datasourceAliases[datasourceIndex] = this.prepareEntityAlias(datasourceAliases[datasourceIndex]);
         }
       }
-      if (targetDeviceAliases) {
-        for (const strIndex of Object.keys(targetDeviceAliases)) {
-          const datasourceIndex = Number(strIndex);
-          targetDeviceAliases[datasourceIndex] = this.prepareEntityAlias(targetDeviceAliases[datasourceIndex]);
-        }
+      if (aliasesInfo.targetDeviceAlias) {
+        aliasesInfo.targetDeviceAlias = this.prepareEntityAlias(aliasesInfo.targetDeviceAlias);
       }
     }
     return aliasesInfo;
@@ -1035,14 +1135,17 @@ export class ImportExportService {
     };
   }
 
-  private openImportDialog(importTitle: string, importFileLabel: string): Observable<any> {
+  private openImportDialog(importTitle: string, importFileLabel: string,
+                           enableImportFromContent = false, importContentLabel?: string): Observable<any> {
     return this.dialog.open<ImportDialogComponent, ImportDialogData,
       any>(ImportDialogComponent, {
       disableClose: true,
       panelClass: ['tb-dialog', 'tb-fullscreen-dialog'],
       data: {
         importTitle,
-        importFileLabel
+        importFileLabel,
+        enableImportFromContent,
+        importContentLabel
       }
     }).afterClosed().pipe(
       map((importedData) => {
@@ -1120,7 +1223,44 @@ export class ImportExportService {
     if (isDefined(exportedData.customerId)) {
       delete exportedData.customerId;
     }
+    if (isDefined(exportedData.externalId)) {
+      delete exportedData.externalId;
+    }
+    if (isDefined(exportedData.version)) {
+      delete exportedData.version;
+    }
     return exportedData;
+  }
+
+  private prepareImport<T extends ExportableEntity<EntityId>>(data: T): T{
+    const importedData = deepClone(data);
+    if (isDefined(importedData.externalId)) {
+      delete importedData.externalId;
+    }
+    return importedData;
+  }
+
+  private getIncludeResourcesPreference(key: SupportEntityResources): Observable<boolean> {
+    return this.store.pipe(
+      select(selectUserSettingsProperty(key)),
+      take(1)
+    );
+  }
+
+  private openExportDialog(title: string, prompt: string, includeResources: boolean, ignoreLoading?: boolean) {
+    return this.dialog.open<ExportResourceDialogComponent, ExportResourceDialogData, ExportResourceDialogDialogResult>(
+      ExportResourceDialogComponent, {
+        disableClose: true,
+        panelClass: ['tb-dialog', 'tb-fullscreen-dialog'],
+        data: { title, prompt, include: includeResources, ignoreLoading }
+      }
+    ).afterClosed();
+  }
+
+  private updateUserSettingsIncludeResourcesIfNeeded(currentValue: boolean, newValue: boolean, key: SupportEntityResources) {
+    if (currentValue !== newValue) {
+      this.store.dispatch(new ActionPreferencesPutUserSettings({[key]: newValue }));
+    }
   }
 
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,16 @@
  */
 package org.thingsboard.server.dao.service.validator;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.thingsboard.server.common.data.TbResource;
-import org.thingsboard.server.common.data.id.EntityId;
+import org.thingsboard.server.common.data.TbResourceInfo;
+import org.thingsboard.server.common.data.id.TbResourceId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.tenant.profile.DefaultTenantProfileConfiguration;
-import org.thingsboard.server.common.data.widget.BaseWidgetType;
-import org.thingsboard.server.common.data.widget.WidgetTypeDetails;
 import org.thingsboard.server.dao.exception.DataValidationException;
 import org.thingsboard.server.dao.resource.TbResourceDao;
 import org.thingsboard.server.dao.service.DataValidator;
@@ -33,7 +33,6 @@ import org.thingsboard.server.dao.tenant.TenantService;
 import org.thingsboard.server.dao.widget.WidgetTypeDao;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 import static org.thingsboard.server.common.data.EntityType.TB_RESOURCE;
 
@@ -83,19 +82,8 @@ public class ResourceDataValidator extends DataValidator<TbResource> {
         if (resource.getResourceType() == null) {
             throw new DataValidationException("Resource type should be specified!");
         }
-        if (!resource.getTenantId().isSysTenantId() && resource.getData() != null) {
-            DefaultTenantProfileConfiguration profileConfiguration = tenantProfileCache.get(tenantId).getDefaultProfileConfiguration();
-            long maxResourceSize = profileConfiguration.getMaxResourceSize();
-            if (maxResourceSize > 0 && resource.getData().length > maxResourceSize) {
-                throw new IllegalArgumentException("Resource exceeds the maximum size of " + maxResourceSize + " bytes");
-            }
-            long maxSumResourcesDataInBytes = profileConfiguration.getMaxResourcesInBytes();
-            int dataSize = resource.getData().length;
-            if (resource.getId() != null) {
-                long prevSize = resourceDao.getResourceSize(tenantId, resource.getId());
-                dataSize -= prevSize;
-            }
-            validateMaxSumDataSizePerTenant(tenantId, resourceDao, maxSumResourcesDataInBytes, dataSize, TB_RESOURCE);
+        if (resource.getData() != null) {
+            validateResourceSize(resource.getTenantId(), resource.getId(), resource.getData().length);
         }
         if (StringUtils.isEmpty(resource.getFileName())) {
             throw new DataValidationException("Resource file name should be specified!");
@@ -108,13 +96,26 @@ public class ResourceDataValidator extends DataValidator<TbResource> {
         }
     }
 
-    @Override
-    public void validateDelete(TenantId tenantId, EntityId resourceId) {
-        List<WidgetTypeDetails> widgets = widgetTypeDao.findWidgetTypesInfosByTenantIdAndResourceId(tenantId.getId(),
-                resourceId.getId());
+    public void validateResourceSize(TenantId tenantId, TbResourceId resourceId, long dataSize) {
+        if (!tenantId.isSysTenantId()) {
+            DefaultTenantProfileConfiguration profileConfiguration = tenantProfileCache.get(tenantId).getDefaultProfileConfiguration();
+            long maxResourceSize = profileConfiguration.getMaxResourceSize();
+            if (maxResourceSize > 0 && dataSize > maxResourceSize) {
+                throw new IllegalArgumentException("Resource exceeds the maximum size of " + FileUtils.byteCountToDisplaySize(maxResourceSize));
+            }
+            long maxSumResourcesDataInBytes = profileConfiguration.getMaxResourcesInBytes();
+            if (resourceId != null) {
+                long prevSize = resourceDao.getResourceSize(tenantId, resourceId);
+                dataSize -= prevSize;
+            }
+            validateMaxSumDataSizePerTenant(tenantId, resourceDao, maxSumResourcesDataInBytes, dataSize, TB_RESOURCE);
+        }
+    }
+
+    public void validateDelete(TenantId tenantId, TbResourceInfo resourceInfo) {
+        List<String> widgets = widgetTypeDao.findWidgetTypesNamesByTenantIdAndResourceLink(tenantId.getId(), resourceInfo.getLink());
         if (!widgets.isEmpty()) {
-            List<String> widgetNames = widgets.stream().map(BaseWidgetType::getName).collect(Collectors.toList());
-            throw new DataValidationException(String.format("Following widget types uses current resource: %s", widgetNames));
+            throw new DataValidationException("Following widget types use this resource: " + String.join(", ", widgets));
         }
     }
 

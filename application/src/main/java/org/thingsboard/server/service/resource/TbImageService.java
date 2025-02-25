@@ -1,5 +1,5 @@
 /**
- * Copyright © 2016-2023 The Thingsboard Authors
+ * Copyright © 2016-2025 The Thingsboard Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,19 @@
  */
 package org.thingsboard.server.service.resource;
 
+import org.thingsboard.server.common.data.ResourceExportData;
 import org.thingsboard.server.common.data.TbImageDeleteResult;
 import org.thingsboard.server.common.data.TbResource;
 import org.thingsboard.server.common.data.TbResourceInfo;
 import org.thingsboard.server.common.data.User;
 import org.thingsboard.server.dao.resource.ImageCacheKey;
+import org.thingsboard.server.service.security.model.SecurityUser;
 
 public interface TbImageService {
 
     TbResourceInfo save(TbResource image, User user) throws Exception;
 
-    TbResourceInfo save(TbResourceInfo imageInfo, User user);
+    TbResourceInfo save(TbResourceInfo imageInfo, TbResourceInfo oldImageInfo, User user);
 
     TbImageDeleteResult delete(TbResourceInfo imageInfo, User user, boolean force);
 
@@ -33,6 +35,8 @@ public interface TbImageService {
 
     void putETag(ImageCacheKey imageCacheKey, String etag);
 
-    void evictETag(ImageCacheKey imageCacheKey);
+    void evictETags(ImageCacheKey imageCacheKey);
+
+    TbResourceInfo importImage(ResourceExportData imageData, boolean checkExisting, SecurityUser user) throws Exception;
 
 }
