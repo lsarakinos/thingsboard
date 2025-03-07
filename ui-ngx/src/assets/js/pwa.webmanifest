@@ -113,8 +113,27 @@
         }		
   ],
   "start_url": "/home",
-  "display": "fullscreen",
+  "display": "standalone",
   "theme_color": "#305680",
   "orientation": "portrait-primary",
-  "background_color": "#fff"
+  "background_color": "#fff",
+  "categories": ["productivity", "utilities"],
+  "iarc_rating_id": "e84b072d-71b3-4d3e-86ae-31a8ce4e53b7",
+  "screenshots": [
+   {
+      "src": "https://www.thingsboard.gr/wp-content/uploads/2025/03/Screenshot_2025-03-07-10-47-54-95_40deb401b9ffe8e1df2f1cc5ba480b12.jpg",
+      "type": "image/jpg",
+      "sizes": "1080x2400"
+   },
+   {
+      "src": "https://www.thingsboard.gr/wp-content/uploads/2025/03/Screenshot_2025-03-07-10-51-02-51_40deb401b9ffe8e1df2f1cc5ba480b12.jpg",
+      "type": "image/jpg",
+      "sizes": "1080x2400"
+   },
+   {
+      "src": "https://www.thingsboard.gr/wp-content/uploads/2025/03/Screenshot_2025-03-07-10-51-52-42_40deb401b9ffe8e1df2f1cc5ba480b12.jpg",
+      "type": "image/jpg",
+      "sizes": "1080x2400"
+   }
+  ]
 }
